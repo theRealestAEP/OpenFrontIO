@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { NationStructureBehavior } from "../src/core/execution/nation/NationStructureBehavior";
-import { Difficulty, PlayerType } from "../src/core/game/Game";
+import { Difficulty, PlayerType, UnitType } from "../src/core/game/Game";
 import { Cluster } from "../src/core/game/TrainStation";
 import { PseudoRandom } from "../src/core/PseudoRandom";
 
@@ -19,6 +19,10 @@ const MAX_TRADE_GOLD = Number(TRAIN_GOLD.ally); // denominator
 
 function makeUnit(tile: number): any {
   return { tile: () => tile };
+}
+
+function makeLeveledUnit(tile: number, level: number): any {
+  return { tile: () => tile, level: () => level };
 }
 
 function makeStation(unit: any, cluster: Cluster | null = null): any {
@@ -353,5 +357,106 @@ describe("NationStructureBehavior.getOrBuildReachableStations", () => {
     (behavior as any).getOrBuildReachableStations();
 
     expect(buildSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("NationStructureBehavior oil rigs", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not target oil rigs when the nation has no active oil under its territory", () => {
+    const game = {
+      config: () => ({
+        gameConfig: () => ({ difficulty: Difficulty.Medium }),
+      }),
+      oilFields: () => [],
+    };
+    const player = {
+      unitsOwned: vi.fn(() => 0),
+      numTilesOwned: vi.fn(() => 10),
+      tiles: vi.fn(() => new Set([1, 2, 3])),
+    };
+    const behavior = makeBehavior(game, player);
+
+    expect(
+      (behavior as any).shouldBuildStructure(UnitType.OilRig, 3, false),
+    ).toBe(false);
+  });
+
+  it("builds oil rigs when the nation owns active oil territory and is below the field cap", () => {
+    const activeField = {
+      id: 1,
+      center: 10,
+      tiles: [10, 11, 12],
+      maxReserve: 16_000,
+      remainingReserve: 16_000,
+    };
+    const game = {
+      config: () => ({
+        gameConfig: () => ({ difficulty: Difficulty.Medium }),
+      }),
+      oilFields: () => [activeField],
+    };
+    const player = {
+      unitsOwned: vi.fn(() => 0),
+      numTilesOwned: vi.fn(() => 10),
+      tiles: vi.fn(() => new Set([10, 50])),
+    };
+    const behavior = makeBehavior(game, player);
+
+    expect(
+      (behavior as any).shouldBuildStructure(UnitType.OilRig, 3, false),
+    ).toBe(true);
+  });
+
+  it("prefers a fresh field over stacking onto an already-developed field", () => {
+    const stackedField = {
+      id: 1,
+      center: 10,
+      tiles: [10, 11],
+      maxReserve: 16_000,
+      remainingReserve: 12_000,
+    };
+    const freshField = {
+      id: 2,
+      center: 20,
+      tiles: [20, 21],
+      maxReserve: 16_000,
+      remainingReserve: 16_000,
+    };
+    const game = {
+      oilFieldAt: vi.fn((tile: number) => {
+        if (tile === 10 || tile === 11) {
+          return stackedField;
+        }
+        if (tile === 20 || tile === 21) {
+          return freshField;
+        }
+        return null;
+      }),
+      unitInfo: vi.fn(() => ({
+        cost: () => 1_000_000n,
+      })),
+      magnitude: vi.fn(() => 0),
+      x: vi.fn((tile: number) => tile),
+      y: vi.fn(() => 0),
+      manhattanDist: vi.fn((a: number, b: number) => Math.abs(a - b)),
+      config: () => ({
+        nukeMagnitudes: () => ({ outer: 10 }),
+      }),
+    };
+    const player = {
+      units: vi.fn((type?: string) => {
+        if (type === UnitType.OilRig) {
+          return [makeLeveledUnit(10, 3)];
+        }
+        return [];
+      }),
+    };
+    const behavior = makeBehavior(game, player);
+    const valueFn = (behavior as any).structureSpawnTileValue(UnitType.OilRig);
+
+    expect(valueFn(20)).toBeGreaterThan(valueFn(11));
   });
 });

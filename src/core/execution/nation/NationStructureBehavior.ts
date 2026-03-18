@@ -47,6 +47,7 @@ function getStructureRatios(
 ): Partial<Record<UnitType, StructureRatioConfig>> {
   return {
     [UnitType.Port]: { ratioPerCity: 0.75, perceivedCostIncreasePerOwned: 1 },
+    [UnitType.OilRig]: { ratioPerCity: 1.25, perceivedCostIncreasePerOwned: 1 },
     [UnitType.Factory]: {
       ratioPerCity: 0.75,
       perceivedCostIncreasePerOwned: 1,
@@ -84,6 +85,13 @@ const DEFENSE_POST_DENSITY_THRESHOLD = 1 / 5000;
 /** Estimated number of tiles per city equivalent, used when cities are disabled */
 const TILES_PER_CITY_EQUIVALENT = 2000;
 
+/** Oil-rig marginal value model mirrors OilExecution's per-second economy. */
+const OIL_GOLD_PER_UNIT = 1200;
+const OIL_UNITS_PER_SECOND_BASE = 30;
+const OIL_MAX_PAYBACK_SECONDS = 180;
+const OIL_MIN_REMAINING_VALUE_MULTIPLIER = 2;
+const OIL_RIGS_PER_FIELD_TARGET = 2;
+
 export class NationStructureBehavior {
   private reachableStationsCache: Array<{
     tile: TileRef;
@@ -113,6 +121,7 @@ export class NationStructureBehavior {
     const buildOrder: UnitType[] = [
       UnitType.DefensePost,
       UnitType.Port,
+      UnitType.OilRig,
       UnitType.Factory,
       UnitType.SAMLauncher,
       UnitType.MissileSilo,
@@ -216,6 +225,18 @@ export class NationStructureBehavior {
       ) {
         return false;
       }
+    }
+
+    if (type === UnitType.OilRig) {
+      const ownedOilFieldCount = this.ownedActiveOilFieldCount();
+      if (ownedOilFieldCount === 0) {
+        return false;
+      }
+      const targetCount = Math.min(
+        Math.max(1, Math.floor(cityCount * ratio)),
+        ownedOilFieldCount * OIL_RIGS_PER_FIELD_TARGET,
+      );
+      return owned < targetCount;
     }
 
     const targetCount = Math.floor(cityCount * ratio);
@@ -454,7 +475,9 @@ export class NationStructureBehavior {
     const tiles =
       type === UnitType.Port
         ? this.randCoastalTileArray(25)
-        : randTerritoryTileArray(this.random, this.game, this.player, 25);
+        : type === UnitType.OilRig
+          ? this.randOwnedOilTileArray(80)
+          : randTerritoryTileArray(this.random, this.game, this.player, 25);
     if (tiles.length === 0) return null;
     const valueFunction = this.structureSpawnTileValue(type);
     if (valueFunction === null) return null;
@@ -475,6 +498,13 @@ export class NationStructureBehavior {
     const tiles = Array.from(this.player.borderTiles()).filter((t) =>
       this.game.isOceanShore(t),
     );
+    return Array.from(this.arraySampler(tiles, numTiles));
+  }
+
+  private randOwnedOilTileArray(numTiles: number): TileRef[] {
+    const tiles = Array.from(this.player.tiles()).filter((tile) => {
+      return this.game.oilFieldAt(tile) !== null;
+    });
     return Array.from(this.arraySampler(tiles, numTiles));
   }
 
@@ -503,6 +533,8 @@ export class NationStructureBehavior {
         return this.missileSiloValue();
       case UnitType.Factory:
         return this.factoryValue();
+      case UnitType.OilRig:
+        return this.oilRigValue();
       case UnitType.Port:
         return this.portValue();
       case UnitType.DefensePost:
@@ -636,6 +668,86 @@ export class NationStructureBehavior {
           minRangeSquared,
           stationRangeSquared,
         ) * structureSpacing;
+
+      return w;
+    };
+  }
+
+  /**
+   * Value function for oil rigs.
+   * Prefers active fields with strong remaining reserves and low existing stack count.
+   * Rejects candidates whose marginal payback is too slow or whose field has too little
+   * remaining gross value to justify another rig.
+   */
+  private oilRigValue(): (tile: TileRef) => number {
+    const game = this.game;
+    const player = this.player;
+    const oilRigCost = Number(this.cost(UnitType.OilRig));
+    const otherUnits = player.units(UnitType.OilRig);
+    const otherTiles: Set<TileRef> = new Set(otherUnits.map((u) => u.tile()));
+    const { structureSpacing } = this.spacingConstants();
+
+    const effectiveRigCountByField = new Map<number, number>();
+    for (const rig of otherUnits) {
+      const field = game.oilFieldAt(rig.tile());
+      if (field === null) {
+        continue;
+      }
+      effectiveRigCountByField.set(
+        field.id,
+        (effectiveRigCountByField.get(field.id) ?? 0) + rig.level(),
+      );
+    }
+
+    return (tile) => {
+      const field = game.oilFieldAt(tile);
+      if (field === null || field.remainingReserve <= 0) {
+        return Number.NEGATIVE_INFINITY;
+      }
+
+      const currentEffectiveRigCount =
+        effectiveRigCountByField.get(field.id) ?? 0;
+      const deltaGoldPerSecond =
+        OIL_UNITS_PER_SECOND_BASE *
+        OIL_GOLD_PER_UNIT *
+        (Math.log(2 + currentEffectiveRigCount) -
+          Math.log(1 + currentEffectiveRigCount));
+      if (deltaGoldPerSecond <= 0) {
+        return Number.NEGATIVE_INFINITY;
+      }
+
+      const paybackSeconds = oilRigCost / deltaGoldPerSecond;
+      if (paybackSeconds > OIL_MAX_PAYBACK_SECONDS) {
+        return Number.NEGATIVE_INFINITY;
+      }
+
+      const remainingValue = field.remainingReserve * OIL_GOLD_PER_UNIT;
+      if (remainingValue < oilRigCost * OIL_MIN_REMAINING_VALUE_MULTIPLIER) {
+        return Number.NEGATIVE_INFINITY;
+      }
+
+      let w = 0;
+      const reserveFraction = field.remainingReserve / Math.max(1, field.maxReserve);
+      w += reserveFraction * structureSpacing * 6;
+      w +=
+        ((OIL_MAX_PAYBACK_SECONDS - paybackSeconds) / OIL_MAX_PAYBACK_SECONDS) *
+        structureSpacing *
+        6;
+
+      // Prefer spreading to fresh or lightly-developed fields.
+      w -= currentEffectiveRigCount * structureSpacing;
+
+      // Still keep some same-type spacing so nations don't visually clump rigs
+      // when multiple spots on a field are equally attractive.
+      const sameTypeTiles = new Set(otherTiles);
+      sameTypeTiles.delete(tile);
+      const closestOther = closestTwoTiles(game, sameTypeTiles, [tile]);
+      if (closestOther !== null) {
+        const d = game.manhattanDist(closestOther.x, tile);
+        w += Math.min(d, structureSpacing);
+      }
+
+      w += game.magnitude(tile) * 0.1;
 
       return w;
     };
@@ -1030,5 +1142,19 @@ export class NationStructureBehavior {
       .config()
       .nukeMagnitudes(UnitType.AtomBomb).outer;
     return { borderSpacing, structureSpacing: borderSpacing * 2 };
+  }
+
+  private ownedActiveOilFieldCount(): number {
+    const ownedTiles = this.player.tiles();
+    let count = 0;
+    for (const field of this.game.oilFields()) {
+      if (field.remainingReserve <= 0) {
+        continue;
+      }
+      if (field.tiles.some((tile) => ownedTiles.has(tile))) {
+        count += 1;
+      }
+    }
+    return count;
   }
 }
