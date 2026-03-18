@@ -559,6 +559,7 @@ export class StructureIconsLayer implements Layer {
   private removeGhostStructure() {
     this.clearGhostStructure();
     this.uiState.ghostStructure = null;
+    this.uiState.selectedUnitType = null;
     this.eventBus.emit(new GhostStructureChangedEvent(null));
   }
 

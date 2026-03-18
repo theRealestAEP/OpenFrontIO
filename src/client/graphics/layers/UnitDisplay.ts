@@ -24,6 +24,7 @@ import mirvIcon from "/images/MIRVIcon.svg?url";
 import missileSiloIcon from "/images/MissileSiloIconWhite.svg?url";
 import hydrogenBombIcon from "/images/MushroomCloudIconWhite.svg?url";
 import atomBombIcon from "/images/NukeIconWhite.svg?url";
+import oilRigIcon from "/images/OilRigIconWhite.svg?url";
 import portIcon from "/images/PortIcon.svg?url";
 import samLauncherIcon from "/images/SamLauncherIconWhite.svg?url";
 import defensePostIcon from "/images/ShieldIconWhite.svg?url";
@@ -38,6 +39,7 @@ export class UnitDisplay extends LitElement implements Layer {
   private _cities = 0;
   private _warships = 0;
   private _factories = 0;
+  private _oilRigs = 0;
   private _missileSilo = 0;
   private _port = 0;
   private _defensePost = 0;
@@ -107,6 +109,7 @@ export class UnitDisplay extends LitElement implements Layer {
     this._defensePost = player.totalUnitLevels(UnitType.DefensePost);
     this._samLauncher = player.totalUnitLevels(UnitType.SAMLauncher);
     this._factories = player.totalUnitLevels(UnitType.Factory);
+    this._oilRigs = player.totalUnitLevels(UnitType.OilRig);
     this._warships = player.totalUnitLevels(UnitType.Warship);
     this.requestUpdate();
   }
@@ -143,6 +146,13 @@ export class UnitDisplay extends LitElement implements Layer {
             UnitType.Factory,
             "factory",
             this.keybinds["buildFactory"]?.key ?? "2",
+          )}
+          ${this.renderUnitItem(
+            oilRigIcon,
+            this._oilRigs,
+            UnitType.OilRig,
+            "oil_rig",
+            this.keybinds["buildOilRig"]?.key ?? "O",
           )}
           ${this.renderUnitItem(
             portIcon,
@@ -265,9 +275,11 @@ export class UnitDisplay extends LitElement implements Layer {
           @click=${() => {
             if (selected) {
               this.uiState.ghostStructure = null;
+              this.uiState.selectedUnitType = null;
               this.eventBus?.emit(new GhostStructureChangedEvent(null));
             } else if (this.canBuild(unitType)) {
               this.uiState.ghostStructure = unitType;
+              this.uiState.selectedUnitType = unitType;
               this.eventBus?.emit(new GhostStructureChangedEvent(unitType));
             }
             this.requestUpdate();

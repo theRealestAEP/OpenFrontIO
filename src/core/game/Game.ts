@@ -11,6 +11,7 @@ import {
   UnitUpdate,
 } from "./GameUpdates";
 import { MotionPlanRecord } from "./MotionPlans";
+import type { OilFieldLayout, OilFieldView } from "./OilField";
 import { RailNetwork } from "./RailNetwork";
 import { Stats } from "./Stats";
 import { UnitPredicate } from "./UnitGrid";
@@ -281,6 +282,7 @@ export enum UnitType {
   MIRVWarhead = "MIRV Warhead",
   Train = "Train",
   Factory = "Factory",
+  OilRig = "Oil Rig",
 }
 
 export enum TrainType {
@@ -310,6 +312,7 @@ export const Structures = unitTypeGroup([
   UnitType.MissileSilo,
   UnitType.Port,
   UnitType.Factory,
+  UnitType.OilRig,
 ] as const);
 
 export const BuildMenus = unitTypeGroup([
@@ -370,6 +373,8 @@ export interface UnitParamsMap {
   };
 
   [UnitType.Factory]: Record<string, never>;
+
+  [UnitType.OilRig]: Record<string, never>;
 
   [UnitType.MissileSilo]: Record<string, never>;
 
@@ -886,6 +891,11 @@ export interface Game extends GameMap {
 
   addUpdate(update: GameUpdate): void;
   railNetwork(): RailNetwork;
+  oilFields(): OilFieldView[];
+  oilFieldAt(tile: TileRef): OilFieldView | null;
+  oilFieldById(fieldId: number): OilFieldView | null;
+  isOilRigActive(unit: Unit): boolean;
+  extractOil(fieldId: number, amount: number): number;
   conquerPlayer(conqueror: Player, conquered: Player): void;
   miniWaterHPA(): PathFinder<number> | null;
   miniWaterGraph(): AbstractGraph | null;

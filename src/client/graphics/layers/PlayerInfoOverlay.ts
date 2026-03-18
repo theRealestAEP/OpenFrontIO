@@ -37,6 +37,7 @@ import cityIcon from "/images/CityIconWhite.svg?url";
 import factoryIcon from "/images/FactoryIconWhite.svg?url";
 import goldCoinIcon from "/images/GoldCoinIcon.svg?url";
 import missileSiloIcon from "/images/MissileSiloIconWhite.svg?url";
+import oilRigIcon from "/images/OilRigIconWhite.svg?url";
 import portIcon from "/images/PortIcon.svg?url";
 import samLauncherIcon from "/images/SamLauncherIconWhite.svg?url";
 import soldierIcon from "/images/SoldierIcon.svg?url";
@@ -405,6 +406,7 @@ export class PlayerInfoOverlay extends LitElement implements Layer {
           <div class="flex gap-0.5 lg:gap-1 items-center mt-0.5">
             ${this.displayUnitCount(player, UnitType.City, cityIcon)}
             ${this.displayUnitCount(player, UnitType.Factory, factoryIcon)}
+            ${this.displayUnitCount(player, UnitType.OilRig, oilRigIcon)}
             ${this.displayUnitCount(player, UnitType.Port, portIcon)}
             ${this.displayUnitCount(
               player,

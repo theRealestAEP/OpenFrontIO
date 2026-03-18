@@ -14,6 +14,7 @@ import shieldIcon from "/images/buildings/fortAlt3.png?url";
 import anchorIcon from "/images/buildings/port1.png?url";
 import missileSiloIcon from "/images/buildings/silo1.png?url";
 import SAMMissileIcon from "/images/buildings/silo4.png?url";
+import oilRigIcon from "/images/buildings/oilrig1.png?url";
 
 const underConstructionColor = colord("rgb(150,150,150)");
 
@@ -51,6 +52,11 @@ export class StructureLayer implements Layer {
     },
     [UnitType.Factory]: {
       icon: factoryIcon,
+      borderRadius: BASE_BORDER_RADIUS * RADIUS_SCALE_FACTOR,
+      territoryRadius: BASE_TERRITORY_RADIUS * RADIUS_SCALE_FACTOR,
+    },
+    [UnitType.OilRig]: {
+      icon: oilRigIcon,
       borderRadius: BASE_BORDER_RADIUS * RADIUS_SCALE_FACTOR,
       territoryRadius: BASE_TERRITORY_RADIUS * RADIUS_SCALE_FACTOR,
     },
@@ -213,6 +219,9 @@ export class StructureLayer implements Layer {
       borderColor = underConstructionColor;
     } else {
       icon = this.unitIcons.get(iconType);
+      if (unit.type() === UnitType.OilRig && !this.game.isOilRigActive(unit)) {
+        borderColor = underConstructionColor;
+      }
     }
 
     if (!config || !icon) return;
@@ -268,7 +277,12 @@ export class StructureLayer implements Layer {
     this.tempContext.drawImage(image, 0, 0, width * 2, height * 2);
 
     // Draw the final result to the main canvas
+    this.context.save();
+    if (unit.type() === UnitType.OilRig && !this.game.isOilRigActive(unit)) {
+      this.context.globalAlpha = 0.45;
+    }
     this.context.drawImage(this.tempCanvas, startX * 2, startY * 2);
+    this.context.restore();
   }
 
   paintCell(cell: Cell, color: Colord, alpha: number) {

@@ -1,17 +1,28 @@
 import { Theme } from "../../../core/configuration/Config";
+import { EventBus } from "../../../core/EventBus";
+import { UnitType } from "../../../core/game/Game";
 import { GameView } from "../../../core/game/GameView";
+import { GameUpdateType } from "../../../core/game/GameUpdates";
+import { AlternateViewEvent } from "../../InputHandler";
 import { TransformHandler } from "../TransformHandler";
+import { UIState } from "../UIState";
 import { Layer } from "./Layer";
 
 export class TerrainLayer implements Layer {
   private canvas: HTMLCanvasElement;
   private context: CanvasRenderingContext2D;
   private imageData: ImageData;
+  private oilCanvas: HTMLCanvasElement;
+  private oilContext: CanvasRenderingContext2D;
+  private alternativeView = false;
+  private lastOilReserves = new Map<number, number>();
   private theme: Theme;
 
   constructor(
     private game: GameView,
+    private eventBus: EventBus,
     private transformHandler: TransformHandler,
+    private uiState: UIState,
   ) {}
   shouldTransform(): boolean {
     return true;
@@ -19,11 +30,28 @@ export class TerrainLayer implements Layer {
   tick() {
     if (this.game.config().theme() !== this.theme) {
       this.redraw();
+      return;
+    }
+
+    const oilUpdates =
+      this.game.updatesSinceLastTick()?.[GameUpdateType.OilFieldState] ?? [];
+    let oilChanged = false;
+    for (const update of oilUpdates) {
+      if (this.lastOilReserves.get(update.fieldId) !== update.remainingReserve) {
+        this.lastOilReserves.set(update.fieldId, update.remainingReserve);
+        oilChanged = true;
+      }
+    }
+
+    if (oilChanged) {
+      this.redrawOilOverlay();
     }
   }
 
   init() {
-    console.log("redrew terrain layer");
+    this.eventBus.on(AlternateViewEvent, (event) => {
+      this.alternativeView = event.alternateView;
+    });
     this.redraw();
   }
 
@@ -43,6 +71,16 @@ export class TerrainLayer implements Layer {
 
     this.initImageData();
     this.context.putImageData(this.imageData, 0, 0);
+
+    this.oilCanvas = document.createElement("canvas");
+    this.oilCanvas.width = this.game.width();
+    this.oilCanvas.height = this.game.height();
+
+    const oilContext = this.oilCanvas.getContext("2d", { alpha: true });
+    if (oilContext === null) throw new Error("2d context not supported");
+    this.oilContext = oilContext;
+
+    this.redrawOilOverlay();
   }
 
   initImageData() {
@@ -59,6 +97,48 @@ export class TerrainLayer implements Layer {
     });
   }
 
+  private redrawOilOverlay() {
+    const imageData = this.oilContext.createImageData(
+      this.oilCanvas.width,
+      this.oilCanvas.height,
+    );
+
+    for (const field of this.game.oilFields()) {
+      const reserveRatio =
+        field.maxReserve <= 0
+          ? 0
+          : clamp(field.remainingReserve / field.maxReserve, 0, 1);
+      this.lastOilReserves.set(field.id, field.remainingReserve);
+
+      if (reserveRatio <= 0) {
+        continue;
+      }
+
+      const red = Math.round(70 + reserveRatio * 150);
+      const green = Math.round(58 + reserveRatio * 112);
+      const blue = Math.round(45 + reserveRatio * 25);
+      const alpha = Math.round(30 + reserveRatio * 170);
+
+      for (const tile of field.tiles) {
+        const offset = tile * 4;
+        imageData.data[offset] = red;
+        imageData.data[offset + 1] = green;
+        imageData.data[offset + 2] = blue;
+        imageData.data[offset + 3] = alpha;
+      }
+    }
+
+    this.oilContext.putImageData(imageData, 0, 0);
+  }
+
+  private shouldRenderOilOverlay(): boolean {
+    return (
+      this.alternativeView ||
+      this.uiState.ghostStructure === UnitType.OilRig ||
+      this.uiState.selectedUnitType === UnitType.OilRig
+    );
+  }
+
   renderLayer(context: CanvasRenderingContext2D) {
     if (this.transformHandler.scale < 1) {
       context.imageSmoothingEnabled = true;
@@ -73,5 +153,18 @@ export class TerrainLayer implements Layer {
       this.game.width(),
       this.game.height(),
     );
+    if (this.shouldRenderOilOverlay()) {
+      context.drawImage(
+        this.oilCanvas,
+        -this.game.width() / 2,
+        -this.game.height() / 2,
+        this.game.width(),
+        this.game.height(),
+      );
+    }
   }
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }

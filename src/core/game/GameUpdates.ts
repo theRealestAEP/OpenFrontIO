@@ -59,6 +59,7 @@ export enum GameUpdateType {
   Hash,
   UnitIncoming,
   BonusEvent,
+  OilFieldState,
   RailroadDestructionEvent,
   RailroadConstructionEvent,
   RailroadSnapEvent,
@@ -83,6 +84,7 @@ export type GameUpdate =
   | UnitIncomingUpdate
   | AllianceExtensionUpdate
   | BonusEventUpdate
+  | OilFieldStateUpdate
   | RailroadConstructionUpdate
   | RailroadDestructionUpdate
   | RailroadSnapUpdate
@@ -96,6 +98,12 @@ export interface BonusEventUpdate {
   tile: TileRef;
   gold: number;
   troops: number;
+}
+
+export interface OilFieldStateUpdate {
+  type: GameUpdateType.OilFieldState;
+  fieldId: number;
+  remainingReserve: number;
 }
 
 export interface RailroadConstructionUpdate {

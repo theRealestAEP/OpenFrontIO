@@ -33,6 +33,7 @@ const DefaultKeybinds: Record<string, string> = {
   buildAtomBomb: "Digit8",
   buildHydrogenBomb: "Digit9",
   buildMIRV: "Digit0",
+  buildOilRig: "KeyO",
   attackRatioDown: "KeyT",
   attackRatioUp: "KeyY",
   boatAttack: "KeyB",
@@ -608,6 +609,16 @@ export class UserSettingModal extends BaseModal {
         defaultKey="Digit0"
         .value=${this.getKeyValue("buildMIRV")}
         .display=${this.getKeyChar("buildMIRV")}
+        @change=${this.handleKeybindChange}
+      ></setting-keybind>
+
+      <setting-keybind
+        action="buildOilRig"
+        label=${translateText("user_setting.build_oil_rig")}
+        description=${translateText("user_setting.build_oil_rig_desc")}
+        defaultKey="KeyO"
+        .value=${this.getKeyValue("buildOilRig")}
+        .display=${this.getKeyChar("buildOilRig")}
         @change=${this.handleKeybindChange}
       ></setting-keybind>
 

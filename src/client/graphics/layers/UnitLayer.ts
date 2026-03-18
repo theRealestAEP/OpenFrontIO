@@ -14,6 +14,7 @@ import {
 } from "../../InputHandler";
 import { MoveWarshipIntentEvent } from "../../Transport";
 import { TransformHandler } from "../TransformHandler";
+import { UIState } from "../UIState";
 import { Layer } from "./Layer";
 
 import { GameUpdateType } from "../../../core/game/GameUpdates";
@@ -55,6 +56,7 @@ export class UnitLayer implements Layer {
     private game: GameView,
     private eventBus: EventBus,
     transformHandler: TransformHandler,
+    private uiState: UIState,
   ) {
     this.theme = game.config().theme();
     this.transformHandler = transformHandler;
@@ -534,7 +536,7 @@ export class UnitLayer implements Layer {
     context: CanvasRenderingContext2D = this.context,
   ) {
     this.clearCell(x, y, context);
-    if (this.alternateView) {
+    if (this.shouldUseAlternateView()) {
       switch (relationship) {
         case Relationship.Self:
           context.fillStyle = this.theme.selfColor().toRgbString();
@@ -566,7 +568,7 @@ export class UnitLayer implements Layer {
 
     let alternateViewColor: Colord | null = null;
 
-    if (this.alternateView) {
+    if (this.shouldUseAlternateView()) {
       let rel = this.relationship(unit);
       const dstPortId = unit.targetUnitId();
       if (unit.type() === UnitType.TradeShip && dstPortId !== undefined) {
@@ -617,5 +619,9 @@ export class UnitLayer implements Layer {
         this.context.restore();
       }
     }
+  }
+
+  private shouldUseAlternateView(): boolean {
+    return false;
   }
 }

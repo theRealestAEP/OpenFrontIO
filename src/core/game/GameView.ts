@@ -37,6 +37,7 @@ import {
   UnitUpdate,
 } from "./GameUpdates";
 import { MotionPlanRecord, unpackMotionPlans } from "./MotionPlans";
+import { OilFieldManager } from "./OilField";
 import { TerrainMapData } from "./TerrainMapLoader";
 import { TerraNulliusImpl } from "./TerraNulliusImpl";
 import { UnitGrid, UnitPredicate } from "./UnitGrid";
@@ -652,6 +653,7 @@ export class GameView implements GameMap {
   private _cosmetics: Map<string, PlayerCosmetics> = new Map();
 
   private _map: GameMap;
+  private readonly oilFieldManager: OilFieldManager;
 
   constructor(
     public worker: WorkerClient,
@@ -663,6 +665,7 @@ export class GameView implements GameMap {
     private humans: Player[],
   ) {
     this._map = this._mapData.gameMap;
+    this.oilFieldManager = OilFieldManager.create(this._map, this._config);
     this.lastUpdate = null;
     this.unitGrid = new UnitGrid(this._map);
     // Replace the local player's username with their own stored username.
@@ -754,6 +757,12 @@ export class GameView implements GameMap {
       this.updateTile(tile, state);
       this.updatedTiles.push(tile);
     }
+    gu.updates[GameUpdateType.OilFieldState].forEach((update) => {
+      this.oilFieldManager.setRemainingReserve(
+        update.fieldId,
+        update.remainingReserve,
+      );
+    });
 
     if (gu.packedMotionPlans) {
       const records = unpackMotionPlans(gu.packedMotionPlans);
@@ -1052,6 +1061,32 @@ export class GameView implements GameMap {
 
   recentlyUpdatedTiles(): TileRef[] {
     return this.updatedTiles;
+  }
+
+  oilFields() {
+    return this.oilFieldManager.all();
+  }
+
+  oilFieldAt(tile: TileRef) {
+    return this.oilFieldManager.fieldAt(tile);
+  }
+
+  oilFieldById(fieldId: number) {
+    const layout = this.oilFieldManager.layout(fieldId);
+    if (layout === null) {
+      return null;
+    }
+    return {
+      ...layout,
+      remainingReserve: this.oilFieldManager.remainingReserve(fieldId),
+    };
+  }
+
+  isOilRigActive(unit: UnitView): boolean {
+    if (unit.type() !== UnitType.OilRig || unit.isUnderConstruction()) {
+      return false;
+    }
+    return this.oilFieldManager.hasRemainingReserveAt(unit.tile());
   }
 
   nearbyUnits(

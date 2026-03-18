@@ -457,6 +457,17 @@ export class DefaultConfig implements Config {
           upgradable: true,
         };
         break;
+      case UnitType.OilRig:
+        info = {
+          cost: this.costWrapper(
+            (numUnits: number) =>
+              Math.min(1_000_000, Math.pow(2, numUnits) * 500_000),
+            UnitType.OilRig,
+          ),
+          constructionDuration: this.instantBuild() ? 0 : 2 * 10,
+          upgradable: true,
+        };
+        break;
       case UnitType.Train:
         info = {
           cost: () => 0n,

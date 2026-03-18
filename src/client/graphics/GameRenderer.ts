@@ -61,6 +61,7 @@ export function createRenderer(
     overlappingRailroads: [],
     ghostRailPaths: [],
     rocketDirectionUp: true,
+    selectedUnitType: null,
   };
 
   //hide when the game renders
@@ -280,13 +281,13 @@ export function createRenderer(
   // Try to group layers by the return value of shouldTransform.
   // Not grouping the layers may cause excessive calls to context.save() and context.restore().
   const layers: Layer[] = [
-    new TerrainLayer(game, transformHandler),
-    new TerritoryLayer(game, eventBus, transformHandler, userSettings),
+    new TerrainLayer(game, eventBus, transformHandler, uiState),
+    new TerritoryLayer(game, eventBus, transformHandler, userSettings, uiState),
     new RailroadLayer(game, eventBus, transformHandler, uiState),
     new CoordinateGridLayer(game, eventBus, transformHandler),
     structureLayer,
     samRadiusLayer,
-    new UnitLayer(game, eventBus, transformHandler),
+    new UnitLayer(game, eventBus, transformHandler, uiState),
     new FxLayer(game, eventBus, transformHandler),
     new UILayer(game, eventBus, transformHandler),
     new NukeTrajectoryPreviewLayer(game, eventBus, transformHandler, uiState),

@@ -211,6 +211,26 @@ describe("RailNetworkImpl", () => {
       expect(pathService.findTilePath).toHaveBeenCalledWith(tile, 100);
     });
 
+    test("treats OilRig as a snappable rail stop", () => {
+      const tile = 42 as any;
+      const railGridMock = { query: vi.fn(() => new Set()) };
+      (network as any).railGrid = railGridMock;
+
+      const neighborStation = createMockStation(1);
+      neighborStation.tile.mockReturnValue(100);
+      stationManager.findStation.mockReturnValue(neighborStation);
+
+      const mockPath = [42, 50, 60, 100];
+      pathService.findTilePath.mockReturnValue(mockPath);
+
+      game.nearbyUnits.mockReturnValue([
+        { unit: neighborStation.unit, distSquared: 400 },
+      ]);
+
+      const result = network.computeGhostRailPaths(UnitType.OilRig, tile);
+      expect(result).toEqual([mockPath]);
+    });
+
     test("skips neighbors within min range", () => {
       const tile = 42 as any;
       const railGridMock = { query: vi.fn(() => new Set()) };

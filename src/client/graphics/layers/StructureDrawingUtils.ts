@@ -11,6 +11,7 @@ import anchorIcon from "/images/AnchorIcon.png?url";
 import cityIcon from "/images/CityIcon.png?url";
 import factoryIcon from "/images/FactoryUnit.png?url";
 import missileSiloIcon from "/images/MissileSiloUnit.png?url";
+import oilRigIcon from "/images/buildings/oilrig1.png?url";
 import SAMMissileIcon from "/images/SamLauncherUnit.png?url";
 import shieldIcon from "/images/ShieldIcon.png?url";
 
@@ -18,6 +19,7 @@ export const STRUCTURE_SHAPES: Partial<Record<UnitType, ShapeType>> = {
   [UnitType.City]: "circle",
   [UnitType.Port]: "pentagon",
   [UnitType.Factory]: "circle",
+  [UnitType.OilRig]: "circle",
   [UnitType.DefensePost]: "octagon",
   [UnitType.SAMLauncher]: "square",
   [UnitType.MissileSilo]: "triangle",
@@ -62,6 +64,7 @@ export class SpriteFactory {
   > = new Map([
     [UnitType.City, { iconPath: cityIcon, image: null }],
     [UnitType.Factory, { iconPath: factoryIcon, image: null }],
+    [UnitType.OilRig, { iconPath: oilRigIcon, image: null }],
     [UnitType.DefensePost, { iconPath: shieldIcon, image: null }],
     [UnitType.Port, { iconPath: anchorIcon, image: null }],
     [UnitType.MissileSilo, { iconPath: missileSiloIcon, image: null }],
@@ -425,14 +428,24 @@ export class SpriteFactory {
         cross: [0, 0],
       };
       const [offsetX, offsetY] = SHAPE_OFFSETS[shape] || [0, 0];
-      context.drawImage(
-        this.getImageColored(
-          structureInfo.image,
-          owner.structureColors().dark.toRgbString(),
-        ),
-        offsetX,
-        offsetY,
+      const tintedImage = this.getImageColored(
+        structureInfo.image,
+        owner.structureColors().dark.toRgbString(),
       );
+      if (structureType === UnitType.OilRig) {
+        const maxSize = iconSize * 0.65;
+        const scale = Math.min(
+          maxSize / tintedImage.width,
+          maxSize / tintedImage.height,
+        );
+        const drawWidth = Math.max(1, Math.round(tintedImage.width * scale));
+        const drawHeight = Math.max(1, Math.round(tintedImage.height * scale));
+        const drawX = Math.round((iconSize - drawWidth) / 2);
+        const drawY = Math.round((iconSize - drawHeight) / 2);
+        context.drawImage(tintedImage, drawX, drawY, drawWidth, drawHeight);
+      } else {
+        context.drawImage(tintedImage, offsetX, offsetY);
+      }
     }
 
     if (isMarkedForDeletion) {
@@ -469,6 +482,7 @@ export class SpriteFactory {
         radius = this.game.config().samRange(level ?? 1);
         break;
       case UnitType.Factory:
+      case UnitType.OilRig:
         radius = this.game.config().trainStationMaxRange();
         break;
       case UnitType.DefensePost:

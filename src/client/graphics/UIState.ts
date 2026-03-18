@@ -7,4 +7,5 @@ export interface UIState {
   overlappingRailroads: number[];
   ghostRailPaths: TileRef[][];
   rocketDirectionUp: boolean;
+  selectedUnitType: PlayerBuildableUnitType | null;
 }

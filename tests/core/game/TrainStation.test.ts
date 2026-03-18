@@ -37,6 +37,7 @@ describe("TrainStation", () => {
       }),
       addUpdate: vi.fn(),
       addExecution: vi.fn(),
+      isOilRigActive: vi.fn().mockReturnValue(true),
       stats: vi.fn().mockReturnValue({
         trainExternalTrade: vi.fn(),
         trainSelfTrade: vi.fn(),
@@ -73,6 +74,25 @@ describe("TrainStation", () => {
     station.onTrainStop(trainExecution);
 
     expect(unit.owner().addGold).toHaveBeenCalledWith(1000n, unit.tile());
+  });
+
+  it("pays double for active OilRig stops", () => {
+    unit.type.mockReturnValue(UnitType.OilRig);
+    const station = new TrainStation(game, unit);
+
+    station.onTrainStop(trainExecution);
+
+    expect(unit.owner().addGold).toHaveBeenCalledWith(2000n, unit.tile());
+  });
+
+  it("does not pay for depleted OilRig stops", () => {
+    unit.type.mockReturnValue(UnitType.OilRig);
+    game.isOilRigActive.mockReturnValue(false);
+    const station = new TrainStation(game, unit);
+
+    station.onTrainStop(trainExecution);
+
+    expect(unit.owner().addGold).not.toHaveBeenCalled();
   });
 
   it("handles allied trade", () => {

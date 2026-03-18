@@ -242,6 +242,7 @@ export class InputHandler {
       buildAtomBomb: "Digit8",
       buildHydrogenBomb: "Digit9",
       buildMIRV: "Digit0",
+      buildOilRig: "KeyO",
       pauseGame: "KeyP",
       gameSpeedUp: "Period",
       gameSpeedDown: "Comma",
@@ -601,6 +602,7 @@ export class InputHandler {
 
   private setGhostStructure(ghostStructure: PlayerBuildableUnitType | null) {
     this.uiState.ghostStructure = ghostStructure;
+    this.uiState.selectedUnitType = ghostStructure;
     this.eventBus.emit(new GhostStructureChangedEvent(ghostStructure));
   }
 
@@ -659,6 +661,7 @@ export class InputHandler {
       { key: "buildHydrogenBomb", type: UnitType.HydrogenBomb },
       { key: "buildWarship", type: UnitType.Warship },
       { key: "buildMIRV", type: UnitType.MIRV },
+      { key: "buildOilRig", type: UnitType.OilRig },
     ];
     for (const { key, type } of buildKeybinds) {
       if (this.buildKeybindMatches(code, this.keybinds[key])) return type;

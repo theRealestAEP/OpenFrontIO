@@ -44,6 +44,7 @@ import {
 import { GameMap, TileRef } from "./GameMap";
 import { GameUpdate, GameUpdateType } from "./GameUpdates";
 import { MotionPlanRecord, packMotionPlans } from "./MotionPlans";
+import { OilFieldManager } from "./OilField";
 import { PlayerImpl } from "./PlayerImpl";
 import { RailNetwork } from "./RailNetwork";
 import { createRailNetwork } from "./RailNetworkImpl";
@@ -112,6 +113,8 @@ export class GameImpl implements Game {
   private _miniWaterGraph: AbstractGraph | null = null;
   private _miniWaterHPA: AStarWaterHierarchical | null = null;
   private _teamGameSpawnAreas: TeamGameSpawnAreas | undefined;
+  private _oilFieldManager: OilFieldManager;
+  private lastOilFieldReserves = new Map<number, number>();
 
   constructor(
     private _humans: PlayerInfo[],
@@ -129,6 +132,13 @@ export class GameImpl implements Game {
     this._width = _map.width();
     this._height = _map.height();
     this.unitGrid = new UnitGrid(this._map);
+    this._oilFieldManager = OilFieldManager.create(this._map, this._config);
+    for (const oilField of this._oilFieldManager.snapshots()) {
+      this.lastOilFieldReserves.set(
+        oilField.fieldId,
+        oilField.remainingReserve,
+      );
+    }
 
     if (_config.gameConfig().gameMode === GameMode.Team) {
       this.populateTeams();
@@ -421,6 +431,23 @@ export class GameImpl implements Game {
     for (const player of this._players.values()) {
       // Players change each to so always add them
       this.addUpdate(player.toUpdate());
+    }
+    for (const oilField of this._oilFieldManager.snapshots()) {
+      if (
+        this.lastOilFieldReserves.get(oilField.fieldId) ===
+        oilField.remainingReserve
+      ) {
+        continue;
+      }
+      this.lastOilFieldReserves.set(
+        oilField.fieldId,
+        oilField.remainingReserve,
+      );
+      this.addUpdate({
+        type: GameUpdateType.OilFieldState,
+        fieldId: oilField.fieldId,
+        remainingReserve: oilField.remainingReserve,
+      });
     }
     if (this.ticks() % 10 === 0) {
       this.addUpdate({
@@ -1112,6 +1139,31 @@ export class GameImpl implements Game {
   }
   railNetwork(): RailNetwork {
     return this._railNetwork;
+  }
+  oilFields() {
+    return this._oilFieldManager.all();
+  }
+  oilFieldAt(tile: TileRef) {
+    return this._oilFieldManager.fieldAt(tile);
+  }
+  oilFieldById(fieldId: number) {
+    const layout = this._oilFieldManager.layout(fieldId);
+    if (layout === null) {
+      return null;
+    }
+    return {
+      ...layout,
+      remainingReserve: this._oilFieldManager.remainingReserve(fieldId),
+    };
+  }
+  isOilRigActive(unit: Unit): boolean {
+    if (unit.type() !== UnitType.OilRig || unit.isUnderConstruction()) {
+      return false;
+    }
+    return this._oilFieldManager.hasRemainingReserveAt(unit.tile());
+  }
+  extractOil(fieldId: number, amount: number): number {
+    return this._oilFieldManager.extract(fieldId, amount);
   }
   miniWaterHPA(): PathFinder<number> | null {
     return this._miniWaterHPA;

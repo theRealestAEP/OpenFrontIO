@@ -154,6 +154,8 @@
     "build_city_desc": "Increases your max population. Useful when you can't expand your territory or you're about to hit your population limit.",
     "build_factory": "Factory",
     "build_factory_desc": "Automatically builds railroads to nearby cities, ports and other factories, and can also link up with friendly neighbors. Trains spawn regularly and give you a fixed amount of gold for each building they visit along the route, with extra gold for visiting your neighbors' buildings.",
+    "build_oil_rig": "Oil Rig",
+    "build_oil_rig_desc": "Extracts passive cash from a nearby oil field until the field is depleted. Active oil rigs also count as high-value train stops.",
     "build_defense": "Defense Post",
     "build_defense_desc": "Increases defenses around nearby borders, which show a checkered pattern. Attacks from enemies are slower and have more casualties.",
     "build_port": "Port",
@@ -505,7 +507,8 @@
     "atom_bomb": "Atom Bomb",
     "hydrogen_bomb": "Hydrogen Bomb",
     "mirv": "MIRV",
-    "factory": "Factory"
+    "factory": "Factory",
+    "oil_rig": "Oil Rig"
   },
   "user_setting": {
     "title": "Settings",
@@ -552,6 +555,8 @@
     "build_city_desc": "Build a City under your cursor.",
     "build_factory": "Build Factory",
     "build_factory_desc": "Build a Factory under your cursor.",
+    "build_oil_rig": "Build Oil Rig",
+    "build_oil_rig_desc": "Build an Oil Rig on an oil field under your cursor.",
     "build_defense_post": "Build Defense Post",
     "build_defense_post_desc": "Build a Defense Post under your cursor.",
     "build_port": "Build Port",
@@ -720,7 +725,8 @@
       "port": "Sends trade ships to generate gold",
       "defense_post": "Increases defenses of nearby borders",
       "city": "Increases max population",
-      "factory": "Creates railroads and spawns trains"
+      "factory": "Creates railroads and spawns trains",
+      "oil_rig": "Extracts passive gold from finite oil fields"
     },
     "not_enough_money": "Not enough money"
   },
@@ -965,6 +971,7 @@
       "silo": "Missile Silo",
       "wshp": "Warship",
       "fact": "Factory",
+      "oilr": "Oil Rig",
       "trade": "Trade Ship",
       "trans": "Transport Ship",
       "abomb": "Atom Bomb",

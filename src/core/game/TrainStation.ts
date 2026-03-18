@@ -44,6 +44,33 @@ class FactoryStopHandler implements TrainStopHandler {
   ): void {}
 }
 
+class OilRigStopHandler implements TrainStopHandler {
+  onStop(
+    mg: Game,
+    station: TrainStation,
+    trainExecution: TrainExecution,
+  ): void {
+    if (!mg.isOilRigActive(station.unit)) {
+      return;
+    }
+    const stationOwner = station.unit.owner();
+    const trainOwner = trainExecution.owner();
+    const baseGold = mg
+      .config()
+      .trainGold(
+        rel(trainOwner, stationOwner),
+        trainExecution.tradeStopsVisited(),
+      );
+    const gold = baseGold * 2n;
+    if (trainOwner !== stationOwner) {
+      stationOwner.addGold(gold, station.tile());
+      mg.stats().trainExternalTrade(trainOwner, gold);
+    }
+    trainOwner.addGold(gold, station.tile());
+    mg.stats().trainSelfTrade(trainOwner, gold);
+  }
+}
+
 export function createTrainStopHandlers(
   random: PseudoRandom,
 ): Partial<Record<UnitType, TrainStopHandler>> {
@@ -51,6 +78,7 @@ export function createTrainStopHandlers(
     [UnitType.City]: new TradeStationStopHandler(),
     [UnitType.Port]: new TradeStationStopHandler(),
     [UnitType.Factory]: new FactoryStopHandler(),
+    [UnitType.OilRig]: new OilRigStopHandler(),
   };
 }
 
@@ -163,7 +191,11 @@ export class Cluster {
 
   private isTradeStation(station: TrainStation): boolean {
     const type = station.unit.type();
-    return type === UnitType.City || type === UnitType.Port;
+    return (
+      type === UnitType.City ||
+      type === UnitType.Port ||
+      type === UnitType.OilRig
+    );
   }
 
   has(station: TrainStation) {

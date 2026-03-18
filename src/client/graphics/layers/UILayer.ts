@@ -115,6 +115,7 @@ export class UILayer implements Layer {
       }
       case UnitType.City:
       case UnitType.Factory:
+      case UnitType.OilRig:
       case UnitType.DefensePost:
       case UnitType.Port:
       case UnitType.MissileSilo:
@@ -335,6 +336,7 @@ export class UILayer implements Layer {
           : this.deletionProgress(this.game, unit);
       case UnitType.City:
       case UnitType.Factory:
+      case UnitType.OilRig:
       case UnitType.Port:
       case UnitType.DefensePost:
         return this.deletionProgress(this.game, unit);

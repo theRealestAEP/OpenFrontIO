@@ -46,6 +46,7 @@ describe("InputHandler AutoUpgrade", () => {
         rocketDirectionUp: true,
         overlappingRailroads: [],
         ghostRailPaths: [],
+        selectedUnitType: null,
       },
       mockCanvas,
       eventBus,
@@ -480,6 +481,7 @@ describe("InputHandler AutoUpgrade", () => {
         rocketDirectionUp: true,
         overlappingRailroads: [],
         ghostRailPaths: [],
+        selectedUnitType: null,
       } as UIState;
       inputHandler = new InputHandler(uiState, mockCanvas, eventBus);
       inputHandler.initialize();
@@ -532,6 +534,7 @@ describe("InputHandler AutoUpgrade", () => {
         rocketDirectionUp: true,
         overlappingRailroads: [],
         ghostRailPaths: [],
+        selectedUnitType: null,
       } as UIState;
       inputHandler = new InputHandler(uiState, mockCanvas, eventBus);
       inputHandler.initialize();
@@ -569,6 +572,7 @@ describe("InputHandler AutoUpgrade", () => {
         rocketDirectionUp: true,
         overlappingRailroads: [],
         ghostRailPaths: [],
+        selectedUnitType: null,
       } as UIState;
       inputHandler = new InputHandler(uiState, mockCanvas, eventBus);
       inputHandler.initialize();
@@ -589,6 +593,7 @@ describe("InputHandler AutoUpgrade", () => {
         rocketDirectionUp: true,
         overlappingRailroads: [],
         ghostRailPaths: [],
+        selectedUnitType: null,
       } as UIState;
       inputHandler = new InputHandler(uiState, mockCanvas, eventBus);
       inputHandler.initialize();
@@ -615,6 +620,7 @@ describe("InputHandler AutoUpgrade", () => {
         rocketDirectionUp: true,
         overlappingRailroads: [],
         ghostRailPaths: [],
+        selectedUnitType: null,
       } as UIState;
       inputHandler = new InputHandler(uiState, mockCanvas, eventBus);
       inputHandler.initialize();
@@ -638,6 +644,7 @@ describe("InputHandler AutoUpgrade", () => {
         rocketDirectionUp: true,
         overlappingRailroads: [],
         ghostRailPaths: [],
+        selectedUnitType: null,
       } as UIState;
       inputHandler = new InputHandler(uiState, mockCanvas, eventBus);
       inputHandler.initialize();

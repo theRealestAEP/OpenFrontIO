@@ -86,6 +86,7 @@ export class FxLayer implements Layer {
       case UnitType.MissileSilo:
       case UnitType.SAMLauncher:
       case UnitType.Factory:
+      case UnitType.OilRig:
         this.onStructureEvent(unit);
         break;
     }

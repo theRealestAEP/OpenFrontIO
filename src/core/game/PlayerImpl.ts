@@ -1057,6 +1057,12 @@ export class PlayerImpl implements Player {
     if (!this.isUnitValidToUpgrade(unit)) {
       return false;
     }
+    if (
+      unit.type() === UnitType.OilRig &&
+      !this.mg.oilFieldAt(unit.tile())?.remainingReserve
+    ) {
+      return false;
+    }
     return true;
   }
 
@@ -1170,6 +1176,8 @@ export class PlayerImpl implements Player {
       case UnitType.City:
       case UnitType.Factory:
         return this.landBasedStructureSpawn(targetTile, validTiles);
+      case UnitType.OilRig:
+        return this.oilRigSpawn(targetTile, validTiles);
       default:
         assertNever(unitType);
     }
@@ -1270,6 +1278,17 @@ export class PlayerImpl implements Player {
       return false;
     }
     return tiles[0];
+  }
+
+  oilRigSpawn(
+    tile: TileRef,
+    validTiles: TileRef[] | null = null,
+  ): TileRef | false {
+    const spawn = this.landBasedStructureSpawn(tile, validTiles);
+    if (spawn === false) {
+      return false;
+    }
+    return this.mg.oilFieldAt(spawn)?.remainingReserve ? spawn : false;
   }
 
   private validStructureSpawnTiles(tile: TileRef): TileRef[] {

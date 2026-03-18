@@ -30,6 +30,7 @@ const SNAPPABLE_STRUCTURES: UnitType[] = [
   UnitType.Port,
   UnitType.City,
   UnitType.Factory,
+  UnitType.OilRig,
 ];
 export class RailTileChangedEvent implements GameEvent {
   constructor(public tile: TileRef) {}
@@ -56,6 +57,10 @@ export class RailroadLayer implements Layer {
     private transformHandler: TransformHandler,
     private uiState: UIState,
   ) {}
+
+  private shouldUseAlternateView(): boolean {
+    return false;
+  }
 
   shouldTransform(): boolean {
     return true;
@@ -250,7 +255,8 @@ export class RailroadLayer implements Layer {
   private renderGhostRailroads(context: CanvasRenderingContext2D) {
     if (
       this.uiState.ghostStructure !== UnitType.City &&
-      this.uiState.ghostStructure !== UnitType.Port
+      this.uiState.ghostStructure !== UnitType.Port &&
+      this.uiState.ghostStructure !== UnitType.OilRig
     )
       return;
     if (this.uiState.ghostRailPaths.length === 0) return;
@@ -443,7 +449,7 @@ export class RailroadLayer implements Layer {
       ? recipient.borderColor()
       : colord("rgba(255,255,255,1)");
 
-    if (this.alternativeView && recipient?.isMe()) {
+    if (this.shouldUseAlternateView() && recipient?.isMe()) {
       color = colord("#00ff00");
     }
 

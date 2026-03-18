@@ -21,6 +21,7 @@ import {
 } from "../../InputHandler";
 import { FrameProfiler } from "../FrameProfiler";
 import { TransformHandler } from "../TransformHandler";
+import { UIState } from "../UIState";
 import { Layer } from "./Layer";
 
 export class TerritoryLayer implements Layer {
@@ -63,6 +64,7 @@ export class TerritoryLayer implements Layer {
     private eventBus: EventBus,
     private transformHandler: TransformHandler,
     userSettings: UserSettings,
+    private uiState: UIState,
   ) {
     this.userSettings = userSettings;
     this.theme = game.config().theme();
@@ -339,7 +341,7 @@ export class TerritoryLayer implements Layer {
   }
 
   private updateHighlightedTerritory() {
-    if (!this.alternativeView) {
+    if (!this.shouldUseAlternateView()) {
       return;
     }
 
@@ -390,7 +392,6 @@ export class TerritoryLayer implements Layer {
   }
 
   redraw() {
-    console.log("redrew territory layer");
     this.canvas = document.createElement("canvas");
     const context = this.canvas.getContext("2d");
     if (context === null) throw new Error("2d context not supported");
@@ -477,7 +478,9 @@ export class TerritoryLayer implements Layer {
       if (w > 0 && h > 0) {
         const putImageStart = FrameProfiler.start();
         this.context.putImageData(
-          this.alternativeView ? this.alternativeImageData : this.imageData,
+          this.shouldUseAlternateView() || this.shouldUseOilOverlayView()
+            ? this.alternativeImageData
+            : this.imageData,
           0,
           0,
           vx0,
@@ -605,6 +608,18 @@ export class TerritoryLayer implements Layer {
       return this.theme.neutralColor();
     }
     return this.theme.enemyColor();
+  }
+
+  private shouldUseAlternateView(): boolean {
+    return false;
+  }
+
+  private shouldUseOilOverlayView(): boolean {
+    return (
+      this.alternativeView ||
+      this.uiState.ghostStructure === UnitType.OilRig ||
+      this.uiState.selectedUnitType === UnitType.OilRig
+    );
   }
 
   paintAlternateViewTile(tile: TileRef, other: PlayerView) {
