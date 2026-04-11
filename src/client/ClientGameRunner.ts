@@ -753,8 +753,6 @@ export class ClientGameRunner {
   }
 
   private canAutoBoat(buildables: BuildableUnit[], tile: TileRef): boolean {
-    if (!this.gameView.isLand(tile)) return false;
-
     const canBuild = this.canBoatAttack(buildables);
     if (canBuild === false) return false;
 

@@ -413,6 +413,16 @@ export class DefaultConfig implements Config {
           cost: () => 0n,
         };
         break;
+      case UnitType.OilRigShip:
+        info = {
+          cost: this.costWrapper(
+            (numUnits: number) =>
+              Math.min(1_000_000, Math.pow(2, numUnits) * 500_000),
+            UnitType.OilRig,
+            UnitType.OilRigShip,
+          ),
+        };
+        break;
       case UnitType.MissileSilo:
         info = {
           cost: this.costWrapper(() => 1_000_000, UnitType.MissileSilo),
@@ -471,6 +481,7 @@ export class DefaultConfig implements Config {
             (numUnits: number) =>
               Math.min(1_000_000, Math.pow(2, numUnits) * 500_000),
             UnitType.OilRig,
+            UnitType.OilRigShip,
           ),
           constructionDuration: this.instantBuild() ? 0 : 2 * 10,
           upgradable: true,

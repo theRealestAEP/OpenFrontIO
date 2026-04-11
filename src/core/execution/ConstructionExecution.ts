@@ -6,6 +6,7 @@ import { FactoryExecution } from "./FactoryExecution";
 import { MirvExecution } from "./MIRVExecution";
 import { MissileSiloExecution } from "./MissileSiloExecution";
 import { NukeExecution } from "./NukeExecution";
+import { OffshoreOilRigExecution } from "./OffshoreOilRigExecution";
 import { OilRigExecution } from "./OilRigExecution";
 import { PortExecution } from "./PortExecution";
 import { SAMLauncherExecution } from "./SAMLauncherExecution";
@@ -45,6 +46,26 @@ export class ConstructionExecution implements Execution {
 
   tick(ticks: number): void {
     if (this.structure === null) {
+      if (
+        this.constructionType === UnitType.OilRig &&
+        this.mg.isOcean(this.tile)
+      ) {
+        const spawnTile = this.player.canBuild(
+          this.constructionType,
+          this.tile,
+        );
+        if (spawnTile === false) {
+          console.warn(`cannot build ${this.constructionType}`);
+          this.active = false;
+          return;
+        }
+        this.mg.addExecution(
+          new OffshoreOilRigExecution(this.player, spawnTile),
+        );
+        this.active = false;
+        return;
+      }
+
       const info = this.mg.unitInfo(this.constructionType);
       // For non-structure units (nukes/warship), charge once and delegate to specialized executions.
       const isStructure = this.isStructure(this.constructionType);

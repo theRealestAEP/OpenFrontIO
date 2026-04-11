@@ -98,7 +98,7 @@ export class ProceduralOilFieldSource implements OilFieldSource {
       .map((field, index) => {
         const tiles = Array.from(
           gameMap.circleSearch(field.tile, field.tier.radius, (tile) => {
-            return gameMap.isLand(tile);
+            return gameMap.isLand(tile) || gameMap.isOcean(tile);
           }),
         );
         if (tiles.length === 0) {
@@ -163,9 +163,7 @@ export class OilFieldManager {
   private readonly tileToFieldIds = new Map<TileRef, number[]>();
   private readonly remainingById = new Map<number, number>();
 
-  constructor(
-    private readonly layouts: OilFieldLayout[],
-  ) {
+  constructor(private readonly layouts: OilFieldLayout[]) {
     for (const layout of layouts) {
       this.layoutsById.set(layout.id, layout);
       this.remainingById.set(layout.id, layout.maxReserve);

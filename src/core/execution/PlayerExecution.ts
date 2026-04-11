@@ -45,6 +45,9 @@ export class PlayerExecution implements Execution {
       if (!Structures.has(u.type())) {
         continue;
       }
+      if (u.type() === UnitType.OilRig && this.mg.isOcean(u.tile())) {
+        continue;
+      }
 
       const owner = this.mg!.owner(u.tile());
       if (!owner?.isPlayer()) {

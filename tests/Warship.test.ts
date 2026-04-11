@@ -1,4 +1,5 @@
 import { MoveWarshipExecution } from "../src/core/execution/MoveWarshipExecution";
+import { OilExecution } from "../src/core/execution/OilExecution";
 import { WarshipExecution } from "../src/core/execution/WarshipExecution";
 import {
   Game,
@@ -14,6 +15,72 @@ const coastX = 7;
 let game: Game;
 let player1: Player;
 let player2: Player;
+
+function firstActiveOceanOilTile(game: Game): number {
+  for (const field of game.oilFields()) {
+    if (field.remainingReserve <= 0) {
+      continue;
+    }
+    const tile = field.tiles.find((candidate) => game.isOcean(candidate));
+    if (tile !== undefined) {
+      return tile;
+    }
+  }
+  throw new Error("Expected an ocean oil tile for warship tests");
+}
+
+function nearbyOceanTile(game: Game, tile: number): number {
+  for (const neighbor of game.neighbors(tile)) {
+    if (game.isOcean(neighbor)) {
+      return neighbor;
+    }
+  }
+  throw new Error("Expected an adjacent ocean tile");
+}
+
+function runUntil(game: Game, predicate: () => boolean, maxTicks = 200): void {
+  for (let i = 0; i < maxTicks; i++) {
+    if (predicate()) {
+      return;
+    }
+    game.executeNextTick();
+  }
+
+  throw new Error("Condition was not reached before maxTicks elapsed");
+}
+
+function ticksUntilNextCargoLaunch(game: Game): number {
+  const remainder = game.ticks() % 100;
+  return remainder === 0 ? 100 : 100 - remainder;
+}
+
+function buildReachablePort(game: Game, player: Player, oceanTile: number) {
+  const minDistSquared = game.config().structureMinDist() ** 2;
+
+  for (let y = 0; y < game.height(); y++) {
+    for (let x = 0; x < game.width(); x++) {
+      const tile = game.ref(x, y);
+      if (!game.isOceanShore(tile)) {
+        continue;
+      }
+      if (game.getWaterComponent(tile) !== game.getWaterComponent(oceanTile)) {
+        continue;
+      }
+      if (game.euclideanDistSquared(tile, oceanTile) < minDistSquared) {
+        continue;
+      }
+      if (
+        game.nearbyUnits(tile, 0, UnitType.Port, undefined, true).length > 0
+      ) {
+        continue;
+      }
+      player.conquer(tile);
+      return player.buildUnit(UnitType.Port, tile, {});
+    }
+  }
+
+  throw new Error("Expected a reachable port tile");
+}
 
 describe("Warship", () => {
   beforeEach(async () => {
@@ -246,5 +313,96 @@ describe("Warship", () => {
     exec.init(game, 0);
 
     expect(exec.isActive()).toBe(false);
+  });
+
+  test("Warship does not capture finished offshore oil rigs", async () => {
+    const oceanTile = firstActiveOceanOilTile(game);
+    const rig = player2.buildUnit(UnitType.OilRig, oceanTile, {});
+    const warshipTile = nearbyOceanTile(game, oceanTile);
+
+    game.addExecution(
+      new WarshipExecution(
+        player1.buildUnit(UnitType.Warship, warshipTile, {
+          patrolTile: warshipTile,
+        }),
+      ),
+    );
+
+    executeTicks(game, 10);
+
+    expect(rig.owner()).toBe(player2);
+  });
+
+  test("Warship does not capture offshore oil rigs while they are under construction", async () => {
+    const oceanTile = firstActiveOceanOilTile(game);
+    const rig = player2.buildUnit(UnitType.OilRig, oceanTile, {});
+    rig.setUnderConstruction(true);
+    const warshipTile = nearbyOceanTile(game, oceanTile);
+
+    game.addExecution(
+      new WarshipExecution(
+        player1.buildUnit(UnitType.Warship, warshipTile, {
+          patrolTile: warshipTile,
+        }),
+      ),
+    );
+
+    executeTicks(game, 10);
+
+    expect(rig.owner()).toBe(player2);
+  });
+
+  test("Warship does not capture offshore deploy ships in v1", async () => {
+    const oceanTile = firstActiveOceanOilTile(game);
+    const shipTile = nearbyOceanTile(game, oceanTile);
+    const deployShip = player2.buildUnit(UnitType.OilRigShip, shipTile, {
+      targetTile: oceanTile,
+    });
+    const warshipTile = nearbyOceanTile(game, shipTile);
+
+    game.addExecution(
+      new WarshipExecution(
+        player1.buildUnit(UnitType.Warship, warshipTile, {
+          patrolTile: warshipTile,
+        }),
+      ),
+    );
+
+    executeTicks(game, 10);
+
+    expect(deployShip.owner()).toBe(player2);
+  });
+
+  test("Warship captures offshore oil cargo ships and pays out on delivery", async () => {
+    game.addExecution(new OilExecution());
+
+    const oceanTile = firstActiveOceanOilTile(game);
+    player1.buildUnit(UnitType.Port, game.ref(coastX, 12), {});
+    buildReachablePort(game, player2, oceanTile);
+    player2.buildUnit(UnitType.OilRig, oceanTile, {});
+    const warshipTile = nearbyOceanTile(game, oceanTile);
+
+    game.addExecution(
+      new WarshipExecution(
+        player1.buildUnit(UnitType.Warship, warshipTile, {
+          patrolTile: warshipTile,
+        }),
+      ),
+    );
+
+    const pirateGoldBefore = player1.gold();
+    const ownerGoldBefore = player2.gold();
+
+    executeTicks(game, ticksUntilNextCargoLaunch(game));
+    runUntil(game, () => game.unitCount(UnitType.TradeShip) === 1, 5);
+
+    const cargoShip = game.units(UnitType.TradeShip)[0];
+
+    runUntil(game, () => cargoShip.owner() === player1, 100);
+    expect(player1.gold()).toBe(pirateGoldBefore);
+
+    runUntil(game, () => player1.gold() > pirateGoldBefore, 300);
+    expect(player1.gold()).toBeGreaterThan(pirateGoldBefore);
+    expect(player2.gold()).toBe(ownerGoldBefore);
   });
 });

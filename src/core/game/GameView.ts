@@ -2,6 +2,10 @@ import { Colord, colord } from "colord";
 import { base64url } from "jose";
 import { Config } from "../configuration/Config";
 import { ColorPalette } from "../CosmeticSchemas";
+import {
+  ConnectedComponents,
+  LAND_MARKER,
+} from "../pathfinding/algorithms/ConnectedComponents";
 import { PatternDecoder } from "../PatternDecoder";
 import { ClientID, GameID, Player, PlayerCosmetics } from "../Schemas";
 import { createRandomName, formatPlayerDisplayName } from "../Util";
@@ -38,6 +42,7 @@ import {
 } from "./GameUpdates";
 import { MotionPlanRecord, unpackMotionPlans } from "./MotionPlans";
 import { OilFieldManager } from "./OilField";
+import { isOffshoreOilRigServiced } from "./OilRigUtils";
 import { TerrainMapData } from "./TerrainMapLoader";
 import { TerraNulliusImpl } from "./TerraNulliusImpl";
 import { UnitGrid, UnitPredicate } from "./UnitGrid";
@@ -672,6 +677,8 @@ export class GameView implements GameMap {
 
   private _map: GameMap;
   private readonly oilFieldManager: OilFieldManager;
+  private waterComponents: ConnectedComponents | null = null;
+  private waterComponentsDirty = true;
 
   constructor(
     public worker: WorkerClient,
@@ -771,6 +778,7 @@ export class GameView implements GameMap {
       this.updatedTiles.push(tile);
       if (terrainChanged) {
         this.updatedTerrainTiles.push(tile);
+        this.waterComponentsDirty = true;
       }
     }
     gu.updates[GameUpdateType.OilFieldState].forEach((update) => {
@@ -1115,7 +1123,13 @@ export class GameView implements GameMap {
     if (unit.type() !== UnitType.OilRig || unit.isUnderConstruction()) {
       return false;
     }
-    return this.oilFieldManager.hasRemainingReserveAt(unit.tile());
+    if (!this.oilFieldManager.hasRemainingReserveAt(unit.tile())) {
+      return false;
+    }
+    if (!this.isOcean(unit.tile())) {
+      return true;
+    }
+    return isOffshoreOilRigServiced(this, unit);
   }
 
   recentlyUpdatedTerrainTiles(): TileRef[] {
@@ -1387,6 +1401,37 @@ export class GameView implements GameMap {
   updateTile(tile: TileRef, state: number): boolean {
     return this._map.updateTile(tile, state);
   }
+  getWaterComponent(tile: TileRef): number | null {
+    this.ensureWaterComponents();
+
+    if (this.isWater(tile)) {
+      return this.waterComponentIdAt(tile);
+    }
+
+    for (const neighbor of this.neighbors(tile)) {
+      if (!this.isWater(neighbor)) {
+        continue;
+      }
+      const component = this.waterComponentIdAt(neighbor);
+      if (component !== null) {
+        return component;
+      }
+    }
+
+    for (const neighbor of this.neighbors(tile)) {
+      for (const neighbor2 of this.neighbors(neighbor)) {
+        if (!this.isWater(neighbor2)) {
+          continue;
+        }
+        const component = this.waterComponentIdAt(neighbor2);
+        if (component !== null) {
+          return component;
+        }
+      }
+    }
+
+    return null;
+  }
   numTilesWithFallout(): number {
     return this._map.numTilesWithFallout();
   }
@@ -1396,5 +1441,23 @@ export class GameView implements GameMap {
 
   focusedPlayer(): PlayerView | null {
     return this.myPlayer();
+  }
+
+  private ensureWaterComponents(): void {
+    if (!this.waterComponentsDirty && this.waterComponents !== null) {
+      return;
+    }
+
+    this.waterComponents = new ConnectedComponents(this, false);
+    this.waterComponents.initialize();
+    this.waterComponentsDirty = false;
+  }
+
+  private waterComponentIdAt(tile: TileRef): number | null {
+    const component = this.waterComponents?.getComponentId(tile) ?? 0;
+    if (component === 0 || component === LAND_MARKER) {
+      return null;
+    }
+    return component;
   }
 }

@@ -2,30 +2,40 @@ import { renderNumber } from "../../client/Utils";
 import {
   Execution,
   Game,
+  Gold,
   MessageType,
   Player,
   Unit,
   UnitType,
 } from "../game/Game";
 import { TileRef } from "../game/GameMap";
+import { findReachableOilRigPort } from "../game/OilRigUtils";
 import { WaterPathFinder } from "../pathfinding/PathFinder";
 import { PathStatus } from "../pathfinding/types";
-import { findClosestBy } from "../Util";
+import { findClosestBy, toInt } from "../Util";
+
+interface TradeShipExecutionOptions {
+  cargoGold?: number;
+  cargoMode?: "trade" | "offshore_oil";
+  cargoSourceTile?: TileRef;
+  onSpawnFailed?: () => void;
+}
 
 export class TradeShipExecution implements Execution {
   private active = true;
-  private mg: Game;
+  private mg!: Game;
   private tradeShip: Unit | undefined;
   private wasCaptured = false;
-  private pathFinder: WaterPathFinder;
+  private pathFinder!: WaterPathFinder;
   private tilesTraveled = 0;
   private motionPlanId = 1;
   private motionPlanDst: TileRef | null = null;
 
   constructor(
     private origOwner: Player,
-    private srcPort: Unit,
+    private sourceStructure: Unit,
     private _dstPort: Unit,
+    private options: TradeShipExecutionOptions = {},
   ) {}
 
   init(mg: Game, ticks: number): void {
@@ -41,18 +51,27 @@ export class TradeShipExecution implements Execution {
     if (this.tradeShip === undefined) {
       const spawn = this.origOwner.canBuild(
         UnitType.TradeShip,
-        this.srcPort.tile(),
+        this.sourceStructure.tile(),
       );
       if (spawn === false) {
         console.warn(`cannot build trade ship`);
+        this.options.onSpawnFailed?.();
         this.active = false;
         return;
       }
-      this.tradeShip = this.origOwner.buildUnit(UnitType.TradeShip, spawn, {
+      const tradeShipParams = {
         targetUnit: this._dstPort,
-        lastSetSafeFromPirates: ticks,
+        cargoGold: this.options.cargoGold,
+        cargoMode: this.cargoMode(),
+        cargoSourceTile: this.options.cargoSourceTile,
+        ...(!this.isOffshoreCargo() ? { lastSetSafeFromPirates: ticks } : {}),
+      };
+      this.tradeShip = this.origOwner.buildUnit(UnitType.TradeShip, spawn, {
+        ...tradeShipParams,
       });
-      this.mg.stats().boatSendTrade(this.origOwner, this._dstPort.owner());
+      if (!this.isOffshoreCargo()) {
+        this.mg.stats().boatSendTrade(this.origOwner, this._dstPort.owner());
+      }
     }
 
     if (!this.tradeShip.isActive()) {
@@ -67,46 +86,49 @@ export class TradeShipExecution implements Execution {
       this.wasCaptured = true;
     }
 
-    // If a player captures another player's port while trading we should delete
-    // the ship.
-    if (dstPortOwner.id() === this.srcPort.owner().id()) {
-      this.tradeShip.delete(false);
-      this.active = false;
-      return;
-    }
-
-    if (
-      !this.wasCaptured &&
-      (!this._dstPort.isActive() || !tradeShipOwner.canTrade(dstPortOwner))
-    ) {
-      this.tradeShip.delete(false);
-      this.active = false;
-      return;
-    }
-
     const curTile = this.tradeShip.tile();
 
-    if (
-      this.wasCaptured &&
-      (tradeShipOwner !== dstPortOwner || !this._dstPort.isActive())
-    ) {
-      const nearestPort = findClosestBy(
-        tradeShipOwner.units(UnitType.Port),
-        (port) => this.mg.manhattanDist(port.tile(), curTile),
-        (port) =>
-          port.isActive() &&
-          !port.isMarkedForDeletion() &&
-          !port.isUnderConstruction(),
-      );
-      if (nearestPort === null) {
+    if (this.isOffshoreCargo()) {
+      if (!this.syncOffshoreDestination(curTile)) {
+        return;
+      }
+    } else {
+      // If a player captures another player's port while trading we should delete
+      // the ship.
+      if (dstPortOwner.id() === this.sourceStructure.owner().id()) {
         this.tradeShip.delete(false);
         this.active = false;
         return;
-      } else {
-        this._dstPort = nearestPort;
-        this.tradeShip.setTargetUnit(this._dstPort);
-        // Plan-driven units don't emit per-tick unit updates, so force a sync for the new target.
-        this.tradeShip.touch();
+      }
+
+      if (
+        !this.wasCaptured &&
+        (!this._dstPort.isActive() || !tradeShipOwner.canTrade(dstPortOwner))
+      ) {
+        this.tradeShip.delete(false);
+        this.active = false;
+        return;
+      }
+
+      if (
+        this.wasCaptured &&
+        (tradeShipOwner !== dstPortOwner || !this._dstPort.isActive())
+      ) {
+        const nearestPort = findClosestBy(
+          tradeShipOwner.units(UnitType.Port),
+          (port) => this.mg.manhattanDist(port.tile(), curTile),
+          (port) =>
+            port.isActive() &&
+            !port.isMarkedForDeletion() &&
+            !port.isUnderConstruction(),
+        );
+        if (nearestPort === null) {
+          this.tradeShip.delete(false);
+          this.active = false;
+          return;
+        } else {
+          this.updateDestination(nearestPort);
+        }
       }
     }
 
@@ -139,7 +161,11 @@ export class TradeShipExecution implements Execution {
           this.motionPlanDst = dst;
         }
         // Update safeFromPirates status
-        if (this.mg.isWater(result.node) && this.mg.isShoreline(result.node)) {
+        if (
+          !this.isOffshoreCargo() &&
+          this.mg.isWater(result.node) &&
+          this.mg.isShoreline(result.node)
+        ) {
           this.tradeShip.setSafeFromPirates();
         }
         this.tradeShip.move(result.node);
@@ -149,6 +175,18 @@ export class TradeShipExecution implements Execution {
         this.complete();
         return;
       case PathStatus.NOT_FOUND:
+        if (
+          this.isOffshoreCargo() &&
+          this.rerouteOffshoreDestination(curTile)
+        ) {
+          const nextResult = this.pathFinder.next(
+            curTile,
+            this._dstPort.tile(),
+          );
+          if (nextResult.status !== PathStatus.NOT_FOUND) {
+            return;
+          }
+        }
         console.warn("captured trade ship cannot find route");
         if (this.tradeShip.isActive()) {
           this.tradeShip.delete(false);
@@ -161,7 +199,7 @@ export class TradeShipExecution implements Execution {
   private complete() {
     this.active = false;
     this.tradeShip!.delete(false);
-    const gold = this.mg.config().tradeShipGold(this.tilesTraveled);
+    const gold = this.completedGold();
 
     if (this.wasCaptured) {
       this.tradeShip!.owner().addGold(gold, this._dstPort.tile());
@@ -179,8 +217,11 @@ export class TradeShipExecution implements Execution {
       this.mg
         .stats()
         .boatCapturedTrade(this.tradeShip!.owner(), this.origOwner, gold);
+    } else if (this.isOffshoreCargo()) {
+      this.tradeShip!.owner().addGold(gold, this._dstPort.tile());
+      this.mg.stats().goldWork(this.tradeShip!.owner(), gold);
     } else {
-      this.srcPort.owner().addGold(gold);
+      this.sourceStructure.owner().addGold(gold);
       this._dstPort.owner().addGold(gold, this._dstPort.tile());
       this.mg.displayMessage(
         "events_display.received_gold_from_trade",
@@ -189,13 +230,13 @@ export class TradeShipExecution implements Execution {
         gold,
         {
           gold: renderNumber(gold),
-          name: this.srcPort.owner().displayName(),
+          name: this.sourceStructure.owner().displayName(),
         },
       );
       this.mg.displayMessage(
         "events_display.received_gold_from_trade",
         MessageType.RECEIVED_GOLD_FROM_TRADE,
-        this.srcPort.owner().id(),
+        this.sourceStructure.owner().id(),
         gold,
         {
           gold: renderNumber(gold),
@@ -205,7 +246,11 @@ export class TradeShipExecution implements Execution {
       // Record stats
       this.mg
         .stats()
-        .boatArriveTrade(this.srcPort.owner(), this._dstPort.owner(), gold);
+        .boatArriveTrade(
+          this.sourceStructure.owner(),
+          this._dstPort.owner(),
+          gold,
+        );
     }
     return;
   }
@@ -220,5 +265,48 @@ export class TradeShipExecution implements Execution {
 
   dstPort(): TileRef {
     return this._dstPort.tile();
+  }
+
+  private completedGold(): Gold {
+    if (this.isOffshoreCargo()) {
+      return toInt(this.options.cargoGold ?? 0);
+    }
+    return this.mg.config().tradeShipGold(this.tilesTraveled);
+  }
+
+  private cargoMode(): "trade" | "offshore_oil" {
+    return this.options.cargoMode ?? "trade";
+  }
+
+  private isOffshoreCargo(): boolean {
+    return this.cargoMode() === "offshore_oil";
+  }
+
+  private syncOffshoreDestination(curTile: TileRef): boolean {
+    const owner = this.tradeShip!.owner();
+    if (this._dstPort.isActive() && this._dstPort.owner() === owner) {
+      return true;
+    }
+    return this.rerouteOffshoreDestination(curTile);
+  }
+
+  private rerouteOffshoreDestination(curTile: TileRef): boolean {
+    const owner = this.tradeShip!.owner();
+    const nearestPort = findReachableOilRigPort(this.mg, owner, curTile);
+    if (nearestPort === null) {
+      this.tradeShip!.delete(false);
+      this.active = false;
+      return false;
+    }
+    this.updateDestination(nearestPort);
+    return true;
+  }
+
+  private updateDestination(port: Unit): void {
+    this._dstPort = port;
+    this.tradeShip!.setTargetUnit(this._dstPort);
+    // Plan-driven units don't emit per-tick unit updates, so force a sync for the new target.
+    this.tradeShip!.touch();
+    this.motionPlanDst = null;
   }
 }

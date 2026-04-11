@@ -16,6 +16,7 @@ const anchorIcon = assetUrl("images/buildings/port1.png");
 const missileSiloIcon = assetUrl("images/buildings/silo1.png");
 const SAMMissileIcon = assetUrl("images/buildings/silo4.png");
 const oilRigIcon = assetUrl("images/buildings/oilrig1.png");
+const offshoreOilRigIcon = assetUrl("images/buildings/offshore_oilrig.png");
 
 const underConstructionColor = colord("rgb(150,150,150)");
 
@@ -109,6 +110,13 @@ export class StructureLayer implements Layer {
     Object.entries(this.unitConfigs).forEach(([unitType, config]) => {
       this.loadIcon(unitType, config);
     });
+    const oilRigConfig = this.unitConfigs[UnitType.OilRig];
+    if (oilRigConfig) {
+      this.loadIcon(`${UnitType.OilRig}-offshore`, {
+        ...oilRigConfig,
+        icon: offshoreOilRigIcon,
+      });
+    }
   }
 
   shouldTransform(): boolean {
@@ -222,7 +230,10 @@ export class StructureLayer implements Layer {
 
   private handleUnitRendering(unit: UnitView) {
     const unitType = unit.type();
-    const iconType = unitType;
+    const iconType =
+      unitType === UnitType.OilRig && this.game.isOcean(unit.tile())
+        ? `${UnitType.OilRig}-offshore`
+        : unitType;
     if (!this.isUnitTypeSupported(unitType)) return;
 
     const config = this.unitConfigs[unitType];

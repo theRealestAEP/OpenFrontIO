@@ -13,6 +13,7 @@ const cityIcon = assetUrl("images/CityIcon.png");
 const factoryIcon = assetUrl("images/FactoryUnit.png");
 const missileSiloIcon = assetUrl("images/MissileSiloUnit.png");
 const oilRigIcon = assetUrl("images/buildings/oilrig1.png");
+const offshoreOilRigIcon = assetUrl("images/buildings/offshore_oilrig.png");
 const SAMMissileIcon = assetUrl("images/SamLauncherUnit.png");
 const shieldIcon = assetUrl("images/ShieldIcon.png");
 
@@ -71,6 +72,10 @@ export class SpriteFactory {
     [UnitType.MissileSilo, { iconPath: missileSiloIcon, image: null }],
     [UnitType.SAMLauncher, { iconPath: SAMMissileIcon, image: null }],
   ]);
+  private readonly offshoreOilRigInfo = {
+    iconPath: offshoreOilRigIcon,
+    image: null as HTMLImageElement | null,
+  };
   constructor(
     theme: Theme,
     game: GameView,
@@ -82,6 +87,7 @@ export class SpriteFactory {
     this.transformHandler = transformHandler;
     this.renderSprites = renderSprites;
     this.structuresInfos.forEach((u, unitType) => this.loadIcon(u, unitType));
+    this.loadIcon(this.offshoreOilRigInfo, UnitType.OilRig);
   }
 
   private loadIcon(
@@ -192,6 +198,8 @@ export class SpriteFactory {
     const isMarkedForDeletion = unit.markedForDeletion() !== false;
     const isConstruction = unit.isUnderConstruction();
     const structureType = unit.type();
+    const useOffshoreOilRigArt =
+      structureType === UnitType.OilRig && this.game.isOcean(tile);
     const { type, stage } = options;
     const { scale } = this.transformHandler;
 
@@ -205,6 +213,7 @@ export class SpriteFactory {
         isConstruction,
         isMarkedForDeletion,
         type === "icon",
+        useOffshoreOilRigArt,
       );
       const sprite = new PIXI.Sprite(texture);
       sprite.anchor.set(0.5);
@@ -252,12 +261,15 @@ export class SpriteFactory {
     isConstruction: boolean,
     isMarkedForDeletion: boolean,
     renderIcon: boolean,
+    useOffshoreOilRigArt: boolean = false,
   ): PIXI.Texture {
+    const useOffshoreOilRigTexture = renderIcon && useOffshoreOilRigArt;
     const cacheKeyBase = isConstruction
       ? `construction-${type}`
       : `${this.theme.territoryColor(owner).toRgbString()}-${type}`;
     const cacheKey =
       cacheKeyBase +
+      (useOffshoreOilRigTexture ? "-offshore" : "") +
       (renderIcon ? "-icon" : "") +
       (isMarkedForDeletion ? "-deleted" : "");
 
@@ -273,6 +285,7 @@ export class SpriteFactory {
           isMarkedForDeletion,
           shape,
           renderIcon,
+          useOffshoreOilRigTexture,
         )
       : PIXI.Texture.EMPTY;
     this.textureCache.set(cacheKey, texture);
@@ -286,6 +299,7 @@ export class SpriteFactory {
     isMarkedForDeletion: boolean,
     shape: string,
     renderIcon: boolean,
+    useOffshoreOilRigArt: boolean,
   ): PIXI.Texture {
     const structureCanvas = document.createElement("canvas");
     let iconSize = ICON_SIZE[shape];
@@ -417,7 +431,10 @@ export class SpriteFactory {
         throw new Error(`Unknown shape: ${shape}`);
     }
 
-    const structureInfo = this.structuresInfos.get(structureType);
+    const structureInfo =
+      structureType === UnitType.OilRig && useOffshoreOilRigArt
+        ? this.offshoreOilRigInfo
+        : this.structuresInfos.get(structureType);
 
     if (structureInfo?.image && renderIcon) {
       const SHAPE_OFFSETS = {
@@ -442,7 +459,9 @@ export class SpriteFactory {
         const drawWidth = Math.max(1, Math.round(tintedImage.width * scale));
         const drawHeight = Math.max(1, Math.round(tintedImage.height * scale));
         const drawX = Math.round((iconSize - drawWidth) / 2);
-        const drawY = Math.round((iconSize - drawHeight) / 2);
+        const drawY =
+          Math.round((iconSize - drawHeight) / 2) -
+          Math.max(1, Math.round(iconSize * 0.08));
         context.drawImage(tintedImage, drawX, drawY, drawWidth, drawHeight);
       } else {
         context.drawImage(tintedImage, offsetX, offsetY);
@@ -483,9 +502,10 @@ export class SpriteFactory {
         radius = this.game.config().samRange(level ?? 1);
         break;
       case UnitType.Factory:
-      case UnitType.OilRig:
         radius = this.game.config().trainStationMaxRange();
         break;
+      case UnitType.OilRig:
+        return null;
       case UnitType.DefensePost:
         radius = this.game.config().defensePostRange();
         break;

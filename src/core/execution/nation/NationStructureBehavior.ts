@@ -10,6 +10,12 @@ import {
   UnitType,
 } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
+import type { OilFieldView } from "../../game/OilField";
+import {
+  oilFieldHasReachableOffshoreTile,
+  oilRigEffectiveWeight,
+  ownedPortWaterComponents,
+} from "../../game/OilRigUtils";
 import { Cluster } from "../../game/TrainStation";
 import { PseudoRandom } from "../../PseudoRandom";
 import { assertNever } from "../../Util";
@@ -232,11 +238,13 @@ export class NationStructureBehavior {
       if (ownedOilFieldCount === 0) {
         return false;
       }
+      const totalOilRigCount =
+        owned + this.player.units(UnitType.OilRigShip).length;
       const targetCount = Math.min(
         Math.max(1, Math.floor(cityCount * ratio)),
         ownedOilFieldCount * OIL_RIGS_PER_FIELD_TARGET,
       );
-      return owned < targetCount;
+      return totalOilRigCount < targetCount;
     }
 
     const targetCount = Math.floor(cityCount * ratio);
@@ -502,10 +510,33 @@ export class NationStructureBehavior {
   }
 
   private randOwnedOilTileArray(numTiles: number): TileRef[] {
-    const tiles = Array.from(this.player.tiles()).filter((tile) => {
-      return this.game.oilFieldAt(tile) !== null;
-    });
-    return Array.from(this.arraySampler(tiles, numTiles));
+    const tiles = new Set<TileRef>();
+
+    for (const tile of this.player.tiles()) {
+      if (this.game.oilFieldAt(tile) !== null) {
+        tiles.add(tile);
+      }
+    }
+
+    const portComponents = ownedPortWaterComponents(this.game, this.player);
+    if (portComponents.size > 0) {
+      for (const field of this.game.oilFields()) {
+        if (field.remainingReserve <= 0) {
+          continue;
+        }
+        for (const tile of field.tiles) {
+          if (!this.game.isOcean(tile)) {
+            continue;
+          }
+          const component = this.game.getWaterComponent(tile);
+          if (component !== null && portComponents.has(component)) {
+            tiles.add(tile);
+          }
+        }
+      }
+    }
+
+    return Array.from(this.arraySampler(Array.from(tiles), numTiles));
   }
 
   private *arraySampler<T>(a: T[], sampleSize: number): Generator<T> {
@@ -695,7 +726,8 @@ export class NationStructureBehavior {
       }
       effectiveRigCountByField.set(
         field.id,
-        (effectiveRigCountByField.get(field.id) ?? 0) + rig.level(),
+        (effectiveRigCountByField.get(field.id) ?? 0) +
+          oilRigEffectiveWeight(game, rig),
       );
     }
 
@@ -707,10 +739,11 @@ export class NationStructureBehavior {
 
       const currentEffectiveRigCount =
         effectiveRigCountByField.get(field.id) ?? 0;
+      const candidateWeight = game.isOcean(tile) ? 1.5 : 1;
       const deltaGoldPerSecond =
         OIL_UNITS_PER_SECOND_BASE *
         OIL_GOLD_PER_UNIT *
-        (Math.log(2 + currentEffectiveRigCount) -
+        (Math.log(1 + currentEffectiveRigCount + candidateWeight) -
           Math.log(1 + currentEffectiveRigCount));
       if (deltaGoldPerSecond <= 0) {
         return Number.NEGATIVE_INFINITY;
@@ -727,7 +760,8 @@ export class NationStructureBehavior {
       }
 
       let w = 0;
-      const reserveFraction = field.remainingReserve / Math.max(1, field.maxReserve);
+      const reserveFraction =
+        field.remainingReserve / Math.max(1, field.maxReserve);
       w += reserveFraction * structureSpacing * 6;
       w +=
         ((OIL_MAX_PAYBACK_SECONDS - paybackSeconds) / OIL_MAX_PAYBACK_SECONDS) *
@@ -1146,15 +1180,28 @@ export class NationStructureBehavior {
 
   private ownedActiveOilFieldCount(): number {
     const ownedTiles = this.player.tiles();
+    const portComponents = ownedPortWaterComponents(this.game, this.player);
     let count = 0;
     for (const field of this.game.oilFields()) {
       if (field.remainingReserve <= 0) {
         continue;
       }
-      if (field.tiles.some((tile) => ownedTiles.has(tile))) {
+      if (this.fieldIsReachableForOilRig(field, ownedTiles, portComponents)) {
         count += 1;
       }
     }
     return count;
+  }
+
+  private fieldIsReachableForOilRig(
+    field: OilFieldView,
+    ownedTiles: ReadonlySet<TileRef>,
+    portComponents: Set<number>,
+  ): boolean {
+    if (field.tiles.some((tile) => ownedTiles.has(tile))) {
+      return true;
+    }
+
+    return oilFieldHasReachableOffshoreTile(this.game, field, portComponents);
   }
 }

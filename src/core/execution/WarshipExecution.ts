@@ -62,8 +62,8 @@ export class WarshipExecution implements Execution {
     }
 
     this.warship.setTargetUnit(this.findTargetUnit());
-    if (this.warship.targetUnit()?.type() === UnitType.TradeShip) {
-      this.huntDownTradeShip();
+    if (this.isCapturableTarget(this.warship.targetUnit())) {
+      this.huntDownCapturableUnit();
       return;
     }
 
@@ -121,9 +121,14 @@ export class WarshipExecution implements Execution {
           continue;
         }
       }
-
-      const typePriority =
-        type === UnitType.TransportShip ? 0 : type === UnitType.Warship ? 1 : 2;
+      let typePriority = 3;
+      if (type === UnitType.TransportShip) {
+        typePriority = 0;
+      } else if (type === UnitType.Warship) {
+        typePriority = 1;
+      } else if (type === UnitType.TradeShip) {
+        typePriority = 2;
+      }
 
       if (bestUnit === undefined) {
         bestUnit = unit;
@@ -173,17 +178,20 @@ export class WarshipExecution implements Execution {
     }
   }
 
-  private huntDownTradeShip() {
+  private huntDownCapturableUnit() {
     for (let i = 0; i < 2; i++) {
-      // target is trade ship so capture it.
+      const target = this.warship.targetUnit();
+      if (target === undefined) {
+        return;
+      }
       const result = this.pathfinder.next(
         this.warship.tile(),
-        this.warship.targetUnit()!.tile(),
+        target.tile(),
         5,
       );
       switch (result.status) {
         case PathStatus.COMPLETE:
-          this.warship.owner().captureUnit(this.warship.targetUnit()!);
+          this.warship.owner().captureUnit(target);
           this.warship.setTargetUnit(undefined);
           this.warship.move(this.warship.tile());
           return;
@@ -196,6 +204,16 @@ export class WarshipExecution implements Execution {
         }
       }
     }
+  }
+
+  private isCapturableTarget(unit: Unit | undefined): boolean {
+    if (unit === undefined) {
+      return false;
+    }
+    if (unit.type() === UnitType.TradeShip) {
+      return true;
+    }
+    return false;
   }
 
   private patrol() {

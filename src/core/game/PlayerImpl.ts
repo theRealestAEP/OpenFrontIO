@@ -49,6 +49,7 @@ import {
   GameUpdateType,
   PlayerUpdate,
 } from "./GameUpdates";
+import { canPlaceOilRigAt, findReachableOilRigPort } from "./OilRigUtils";
 import {
   bestShoreDeploymentSource,
   canBuildTransportShip,
@@ -957,13 +958,30 @@ export class PlayerImpl implements Player {
     spawnTile: TileRef,
     params: UnitParams<T>,
   ): Unit {
+    return this.createUnit(type, spawnTile, params, true);
+  }
+
+  spawnUnitWithoutCost<T extends UnitType>(
+    type: T,
+    spawnTile: TileRef,
+    params: UnitParams<T>,
+  ): Unit {
+    return this.createUnit(type, spawnTile, params, false);
+  }
+
+  private createUnit<T extends UnitType>(
+    type: T,
+    spawnTile: TileRef,
+    params: UnitParams<T>,
+    chargeCost: boolean,
+  ): Unit {
     if (this.mg.config().isUnitDisabled(type)) {
       throw new Error(
         `Attempted to build disabled unit ${type} at tile ${spawnTile} by player ${this.name()}`,
       );
     }
 
-    const cost = this.mg.unitInfo(type).cost(this.mg, this);
+    const cost = chargeCost ? this.mg.unitInfo(type).cost(this.mg, this) : 0n;
     const b = new UnitImpl(
       type,
       this.mg,
@@ -974,7 +992,9 @@ export class PlayerImpl implements Player {
     );
     this._units.push(b);
     this.recordUnitConstructed(type);
-    this.removeGold(cost);
+    if (chargeCost) {
+      this.removeGold(cost);
+    }
     this.removeTroops("troops" in params ? (params.troops ?? 0) : 0);
     this.mg.addUpdate(b.toUpdate());
     this.mg.addUnit(b);
@@ -1012,6 +1032,9 @@ export class PlayerImpl implements Player {
     unitType: UnitType,
     knownCost: Gold | null = null,
   ): boolean {
+    if (unitType === UnitType.OilRigShip) {
+      return false;
+    }
     if (this.mg.config().isUnitDisabled(unitType)) {
       return false;
     }
@@ -1163,6 +1186,8 @@ export class PlayerImpl implements Player {
         return canBuildTransportShip(this.mg, this, targetTile);
       case UnitType.TradeShip:
         return this.tradeShipSpawn(targetTile);
+      case UnitType.OilRigShip:
+        return false;
       case UnitType.Train:
         return this.landBasedUnitSpawn(targetTile);
       case UnitType.MissileSilo:
@@ -1279,11 +1304,32 @@ export class PlayerImpl implements Player {
     tile: TileRef,
     validTiles: TileRef[] | null = null,
   ): TileRef | false {
+    if (this.mg.isOcean(tile)) {
+      return this.offshoreOilRigSpawn(tile);
+    }
+
     const spawn = this.landBasedStructureSpawn(tile, validTiles);
     if (spawn === false) {
       return false;
     }
     return this.mg.oilFieldAt(spawn)?.remainingReserve ? spawn : false;
+  }
+
+  private offshoreOilRigSpawn(tile: TileRef): TileRef | false {
+    if (!this.mg.isOcean(tile)) {
+      return false;
+    }
+
+    const field = this.mg.oilFieldAt(tile);
+    if (field === null || field.remainingReserve <= 0) {
+      return false;
+    }
+
+    if (!canPlaceOilRigAt(this.mg, tile)) {
+      return false;
+    }
+
+    return findReachableOilRigPort(this.mg, this, tile) === null ? false : tile;
   }
 
   private validStructureSpawnTiles(tile: TileRef): TileRef[] {
@@ -1327,7 +1373,14 @@ export class PlayerImpl implements Player {
   }
 
   tradeShipSpawn(targetTile: TileRef): TileRef | false {
-    return this.units(UnitType.Port).find((u) => u.tile() === targetTile)
+    return this.units(UnitType.Port, UnitType.OilRig).find(
+      (unit) =>
+        unit.tile() === targetTile &&
+        unit.isActive() &&
+        !unit.isUnderConstruction() &&
+        (unit.type() === UnitType.Port ||
+          (unit.type() === UnitType.OilRig && this.mg.isOcean(unit.tile()))),
+    )
       ? targetTile
       : false;
   }

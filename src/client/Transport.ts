@@ -12,6 +12,7 @@ import { TileRef } from "../core/game/GameMap";
 import { PlayerView } from "../core/game/GameView";
 import {
   AllPlayersStats,
+  BuildUnitIntent,
   ClientHashMessage,
   ClientIntentMessage,
   ClientJoinMessage,
@@ -23,6 +24,7 @@ import {
   Intent,
   ServerMessage,
   ServerMessageSchema,
+  UpgradeStructureIntent,
   Winner,
 } from "../core/Schemas";
 import { replacer } from "../core/Util";
@@ -492,7 +494,7 @@ export class Transport {
   private onSendUpgradeStructureIntent(event: SendUpgradeStructureIntentEvent) {
     this.sendIntent({
       type: "upgrade_structure",
-      unit: event.unitType,
+      unit: event.unitType as UpgradeStructureIntent["unit"],
       unitId: event.unitId,
     });
   }
@@ -556,7 +558,7 @@ export class Transport {
   private onBuildUnitIntent(event: BuildUnitIntentEvent) {
     this.sendIntent({
       type: "build_unit",
-      unit: event.unit,
+      unit: event.unit as BuildUnitIntent["unit"],
       tile: event.tile,
       rocketDirectionUp: event.rocketDirectionUp,
     });

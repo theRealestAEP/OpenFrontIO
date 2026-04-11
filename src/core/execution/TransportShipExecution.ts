@@ -11,7 +11,10 @@ import {
 } from "../game/Game";
 import { TileRef } from "../game/GameMap";
 import { MotionPlanRecord } from "../game/MotionPlans";
-import { targetTransportTile } from "../game/TransportShipUtils";
+import {
+  findCapturableOffshoreOilRig,
+  resolveTransportTarget,
+} from "../game/TransportShipUtils";
 import { WaterPathFinder } from "../pathfinding/PathFinder";
 import { PathStatus } from "../pathfinding/types";
 import { AttackExecution } from "./AttackExecution";
@@ -35,6 +38,7 @@ export class TransportShipExecution implements Execution {
   private boat: Unit;
   private motionPlanId = 1;
   private motionPlanDst: TileRef | null = null;
+  private offshoreRigTarget: Unit | null = null;
 
   private originalOwner: Player;
 
@@ -59,8 +63,19 @@ export class TransportShipExecution implements Execution {
 
     this.lastMove = ticks;
     this.mg = mg;
-    this.target = mg.owner(this.ref);
     this.pathFinder = new WaterPathFinder(mg);
+
+    const targetInfo = resolveTransportTarget(this.mg, this.attacker, this.ref);
+    if (targetInfo === null) {
+      console.warn(
+        `${this.attacker} cannot send ship to ${this.ref}, cannot resolve target`,
+      );
+      this.active = false;
+      return;
+    }
+    this.target = targetInfo.target;
+    this.dst = targetInfo.dst;
+    this.offshoreRigTarget = targetInfo.offshoreRig;
 
     if (
       this.attacker.unitCount(UnitType.TransportShip) >=
@@ -96,16 +111,6 @@ export class TransportShipExecution implements Execution {
       .config()
       .boatAttackAmount(this.attacker, this.target);
     this.troops = Math.min(this.troops, this.attacker.troops());
-
-    this.dst = targetTransportTile(this.mg, this.ref);
-
-    if (this.dst === null) {
-      console.warn(
-        `${this.attacker} cannot send ship to ${this.target}, cannot find target tile`,
-      );
-      this.active = false;
-      return;
-    }
 
     const src = this.attacker.canBuild(UnitType.TransportShip, this.dst);
 
@@ -190,10 +195,18 @@ export class TransportShipExecution implements Execution {
       this.motionPlanDst = null; // Force motion plan re-recording
     }
 
+    if (this.offshoreRigTarget !== null) {
+      this.refreshOffshoreRigTarget();
+    }
+
     // Auto-retreat if destination was destroyed by nuke (turned to water)
     // Checked every tick (not just on graph rebuild) because graph rebuilds
     // are throttled and the tile may already be water before the version bumps.
-    if (this.dst !== null && this.mg.isWater(this.dst)) {
+    if (
+      this.dst !== null &&
+      this.mg.isWater(this.dst) &&
+      this.offshoreRigTarget === null
+    ) {
       if (!this.boat.retreating()) {
         this.boat.orderBoatRetreat();
       }
@@ -227,6 +240,28 @@ export class TransportShipExecution implements Execution {
     const result = this.pathFinder.next(this.boat.tile(), this.dst);
     switch (result.status) {
       case PathStatus.COMPLETE:
+        if (this.offshoreRigTarget !== null) {
+          const targetRig = findCapturableOffshoreOilRig(
+            this.mg,
+            this.attacker,
+            this.ref,
+          );
+          if (targetRig === null) {
+            if (!this.boat.retreating()) {
+              this.boat.orderBoatRetreat();
+            }
+            this.retreatDst = null;
+            this.offshoreRigTarget = null;
+            return;
+          }
+
+          const troops = this.boat.troops();
+          this.attacker.captureUnit(targetRig);
+          this.boat.delete(false);
+          this.active = false;
+          this.mg.stats().boatArriveTroops(this.attacker, this.target, troops);
+          return;
+        }
         if (this.mg.owner(this.dst) === this.attacker) {
           const deaths = this.boat.troops() * (malusForRetreat / 100);
           const survivors = this.boat.troops() - deaths;
@@ -323,6 +358,29 @@ export class TransportShipExecution implements Execution {
       .find((ar) => ar.requestor() === target);
     if (request !== undefined) {
       request.reject();
+    }
+  }
+
+  private refreshOffshoreRigTarget(): void {
+    const targetRig = findCapturableOffshoreOilRig(
+      this.mg,
+      this.attacker,
+      this.ref,
+    );
+    if (targetRig === null) {
+      if (!this.boat.retreating()) {
+        this.boat.orderBoatRetreat();
+      }
+      this.retreatDst = null;
+      this.offshoreRigTarget = null;
+      return;
+    }
+
+    this.offshoreRigTarget = targetRig;
+    this.target = targetRig.owner();
+    this.dst = targetRig.tile();
+    if (this.boat.targetTile() !== this.dst) {
+      this.boat.setTargetTile(this.dst);
     }
   }
 }

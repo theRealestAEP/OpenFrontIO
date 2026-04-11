@@ -22,7 +22,7 @@ function makeUnit(tile: number): any {
 }
 
 function makeLeveledUnit(tile: number, level: number): any {
-  return { tile: () => tile, level: () => level };
+  return { tile: () => tile, level: () => level, type: () => UnitType.OilRig };
 }
 
 function makeStation(unit: any, cluster: Cluster | null = null): any {
@@ -374,6 +374,7 @@ describe("NationStructureBehavior oil rigs", () => {
     };
     const player = {
       unitsOwned: vi.fn(() => 0),
+      units: vi.fn(() => []),
       numTilesOwned: vi.fn(() => 10),
       tiles: vi.fn(() => new Set([1, 2, 3])),
     };
@@ -400,6 +401,7 @@ describe("NationStructureBehavior oil rigs", () => {
     };
     const player = {
       unitsOwned: vi.fn(() => 0),
+      units: vi.fn(() => []),
       numTilesOwned: vi.fn(() => 10),
       tiles: vi.fn(() => new Set([10, 50])),
     };
@@ -438,6 +440,7 @@ describe("NationStructureBehavior oil rigs", () => {
       unitInfo: vi.fn(() => ({
         cost: () => 1_000_000n,
       })),
+      isOcean: vi.fn((tile: number) => tile >= 20),
       magnitude: vi.fn(() => 0),
       x: vi.fn((tile: number) => tile),
       y: vi.fn(() => 0),
@@ -458,5 +461,44 @@ describe("NationStructureBehavior oil rigs", () => {
     const valueFn = (behavior as any).structureSpawnTileValue(UnitType.OilRig);
 
     expect(valueFn(20)).toBeGreaterThan(valueFn(11));
+  });
+
+  it("counts reachable offshore fields when the nation owns a port on the same water component", () => {
+    const offshoreField = {
+      id: 1,
+      center: 20,
+      tiles: [20, 21],
+      maxReserve: 16_000,
+      remainingReserve: 16_000,
+    };
+    const port = {
+      isActive: () => true,
+      isUnderConstruction: () => false,
+      tile: () => 5,
+    };
+    const game = {
+      oilFields: () => [offshoreField],
+      isOcean: vi.fn((tile: number) => tile >= 20),
+      getWaterComponent: vi.fn(() => 7),
+      config: () => ({
+        gameConfig: () => ({ difficulty: Difficulty.Medium }),
+      }),
+    };
+    const player = {
+      unitsOwned: vi.fn(() => 0),
+      units: vi.fn((type?: UnitType) => {
+        if (type === UnitType.Port) {
+          return [port];
+        }
+        return [];
+      }),
+      numTilesOwned: vi.fn(() => 10),
+      tiles: vi.fn(() => new Set<number>()),
+    };
+    const behavior = makeBehavior(game, player);
+
+    expect(
+      (behavior as any).shouldBuildStructure(UnitType.OilRig, 3, false),
+    ).toBe(true);
   });
 });

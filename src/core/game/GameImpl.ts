@@ -41,6 +41,7 @@ import { GameMap, TileRef } from "./GameMap";
 import { GameUpdate, GameUpdateType } from "./GameUpdates";
 import { MotionPlanRecord, packMotionPlans } from "./MotionPlans";
 import { OilFieldManager } from "./OilField";
+import { isOffshoreOilRigServiced } from "./OilRigUtils";
 import { PlayerImpl } from "./PlayerImpl";
 import { RailNetwork } from "./RailNetwork";
 import { createRailNetwork } from "./RailNetworkImpl";
@@ -1200,7 +1201,13 @@ export class GameImpl implements Game {
     if (unit.type() !== UnitType.OilRig || unit.isUnderConstruction()) {
       return false;
     }
-    return this._oilFieldManager.hasRemainingReserveAt(unit.tile());
+    if (!this._oilFieldManager.hasRemainingReserveAt(unit.tile())) {
+      return false;
+    }
+    if (!this.isOcean(unit.tile())) {
+      return true;
+    }
+    return isOffshoreOilRigServiced(this, unit);
   }
   extractOil(fieldId: number, amount: number): number {
     return this._oilFieldManager.extract(fieldId, amount);

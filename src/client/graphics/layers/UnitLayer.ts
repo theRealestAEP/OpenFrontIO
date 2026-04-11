@@ -345,6 +345,7 @@ export class UnitLayer implements Layer {
         this.handleMissileEvent(unit);
         break;
       case UnitType.TradeShip:
+      case UnitType.OilRigShip:
         this.handleTradeShipEvent(unit);
         break;
       case UnitType.Train:

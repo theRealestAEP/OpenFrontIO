@@ -92,4 +92,45 @@ describe("PlayerExecution", () => {
     expect(city.owner()).toBe(otherPlayer);
     expect(city.isActive()).toBe(true);
   });
+
+  test("Offshore oil rigs are not deleted on unowned ocean tiles", async () => {
+    const offshoreGame = await setup(
+      "half_land_half_ocean",
+      {
+        infiniteGold: true,
+        instantBuild: true,
+      },
+      [
+        new PlayerInfo(
+          "offshore",
+          PlayerType.Human,
+          "client_id3",
+          "offshore_id",
+        ),
+      ],
+    );
+
+    while (offshoreGame.inSpawnPhase()) {
+      offshoreGame.executeNextTick();
+    }
+
+    const offshorePlayer = offshoreGame.player("offshore_id");
+    offshoreGame.addExecution(new PlayerExecution(offshorePlayer));
+
+    const oceanTile = offshoreGame
+      .oilFields()
+      .flatMap((field) => field.tiles)
+      .find((tile) => offshoreGame.isOcean(tile));
+    if (oceanTile === undefined) {
+      throw new Error("Expected ocean oil tile for offshore rig test");
+    }
+
+    offshorePlayer.conquer(offshoreGame.ref(0, 0));
+    const rig = offshorePlayer.buildUnit(UnitType.OilRig, oceanTile, {});
+
+    executeTicks(offshoreGame, 3);
+
+    expect(rig.isActive()).toBe(true);
+    expect(offshorePlayer.units(UnitType.OilRig)).toHaveLength(1);
+  });
 });

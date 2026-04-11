@@ -1,6 +1,12 @@
 import { SpatialQuery } from "../pathfinding/spatial/SpatialQuery";
-import { Game, Player, UnitType } from "./Game";
+import { Game, Player, TerraNullius, Unit, UnitType } from "./Game";
 import { TileRef } from "./GameMap";
+
+export interface TransportTargetInfo {
+  dst: TileRef;
+  offshoreRig: Unit | null;
+  target: Player | TerraNullius;
+}
 
 export function canBuildTransportShip(
   game: Game,
@@ -13,26 +19,82 @@ export function canBuildTransportShip(
     return false;
   }
 
-  const dst = targetTransportTile(game, tile);
-  if (dst === null) {
-    return false;
-  }
-
-  const other = game.owner(tile);
-  if (other === player) {
-    return false;
-  }
-  if (other.isPlayer() && !player.canAttackPlayer(other)) {
+  const targetInfo = resolveTransportTarget(game, player, tile);
+  if (targetInfo === null) {
     return false;
   }
 
   const spatial = new SpatialQuery(game);
-  return spatial.closestShoreByWater(player, dst) ?? false;
+  return spatial.closestShoreByWater(player, targetInfo.dst) ?? false;
 }
 
-export function targetTransportTile(gm: Game, tile: TileRef): TileRef | null {
+function landTransportTargetTile(gm: Game, tile: TileRef): TileRef | null {
   const spatial = new SpatialQuery(gm);
   return spatial.closestShore(gm.owner(tile), tile);
+}
+
+export function findCapturableOffshoreOilRig(
+  game: Game,
+  attacker: Player,
+  tile: TileRef,
+): Unit | null {
+  if (!game.isOcean(tile)) {
+    return null;
+  }
+
+  const rig = game
+    .units(UnitType.OilRig)
+    .find((unit) => unit.isActive() && unit.tile() === tile);
+
+  if (
+    rig === undefined ||
+    rig.owner() === attacker ||
+    rig.isUnderConstruction() ||
+    !game.isOcean(rig.tile()) ||
+    !attacker.canAttackPlayer(rig.owner())
+  ) {
+    return null;
+  }
+
+  return rig;
+}
+
+export function resolveTransportTarget(
+  game: Game,
+  attacker: Player,
+  tile: TileRef,
+): TransportTargetInfo | null {
+  const offshoreRig = findCapturableOffshoreOilRig(game, attacker, tile);
+  if (offshoreRig !== null) {
+    return {
+      dst: offshoreRig.tile(),
+      offshoreRig,
+      target: offshoreRig.owner(),
+    };
+  }
+
+  if (game.isOcean(tile)) {
+    return null;
+  }
+
+  const dst = landTransportTargetTile(game, tile);
+  if (dst === null) {
+    return null;
+  }
+
+  const target = game.owner(tile);
+  if (target === attacker) {
+    return null;
+  }
+  if (target.isPlayer() && !attacker.canAttackPlayer(target)) {
+    return null;
+  }
+
+  return {
+    dst,
+    offshoreRig: null,
+    target,
+  };
 }
 
 export function bestShoreDeploymentSource(

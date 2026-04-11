@@ -11,7 +11,7 @@ import {
   UnitUpdate,
 } from "./GameUpdates";
 import { MotionPlanRecord } from "./MotionPlans";
-import type { OilFieldLayout, OilFieldView } from "./OilField";
+import type { OilFieldView } from "./OilField";
 import { RailNetwork } from "./RailNetwork";
 import { Stats } from "./Stats";
 import { UnitPredicate } from "./UnitGrid";
@@ -299,6 +299,7 @@ export enum UnitType {
   AtomBomb = "Atom Bomb",
   HydrogenBomb = "Hydrogen Bomb",
   TradeShip = "Trade Ship",
+  OilRigShip = "Oil Rig Ship",
   MissileSilo = "Missile Silo",
   DefensePost = "Defense Post",
   SAMLauncher = "SAM Launcher",
@@ -389,6 +390,13 @@ export interface UnitParamsMap {
   [UnitType.TradeShip]: {
     targetUnit: Unit;
     lastSetSafeFromPirates?: number;
+    cargoGold?: number;
+    cargoMode?: "trade" | "offshore_oil";
+    cargoSourceTile?: TileRef;
+  };
+
+  [UnitType.OilRigShip]: {
+    targetTile: TileRef;
   };
 
   [UnitType.Train]: {

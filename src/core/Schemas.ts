@@ -15,8 +15,10 @@ import {
   GameMode,
   GameType,
   HumansVsNations,
+  PlayerBuildable,
   Quads,
   RankedType,
+  Structures,
   Trios,
   UnitType,
 } from "./game/Game";
@@ -379,14 +381,14 @@ export const DonateTroopIntentSchema = z.object({
 
 export const BuildUnitIntentSchema = z.object({
   type: z.literal("build_unit"),
-  unit: z.enum(UnitType),
+  unit: z.enum(PlayerBuildable.types),
   tile: z.number(),
   rocketDirectionUp: z.boolean().optional(),
 });
 
 export const UpgradeStructureIntentSchema = z.object({
   type: z.literal("upgrade_structure"),
-  unit: z.enum(UnitType),
+  unit: z.enum(Structures.types),
   unitId: z.number(),
 });
 
