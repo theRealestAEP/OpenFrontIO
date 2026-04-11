@@ -4,6 +4,7 @@ import {
   Game,
   MessageType,
   Player,
+  PlayerType,
   TerraNullius,
   Unit,
   UnitType,
@@ -11,8 +12,8 @@ import {
 import { TileRef } from "../game/GameMap";
 import { MotionPlanRecord } from "../game/MotionPlans";
 import { targetTransportTile } from "../game/TransportShipUtils";
-import { PathFinding } from "../pathfinding/PathFinder";
-import { PathStatus, SteppingPathFinder } from "../pathfinding/types";
+import { WaterPathFinder } from "../pathfinding/PathFinder";
+import { PathStatus } from "../pathfinding/types";
 import { AttackExecution } from "./AttackExecution";
 
 const malusForRetreat = 25;
@@ -26,7 +27,7 @@ export class TransportShipExecution implements Execution {
 
   private mg: Game;
   private target: Player | TerraNullius;
-  private pathFinder: SteppingPathFinder<TileRef>;
+  private pathFinder: WaterPathFinder;
 
   private dst: TileRef | null;
   private src: TileRef | null;
@@ -59,7 +60,7 @@ export class TransportShipExecution implements Execution {
     this.lastMove = ticks;
     this.mg = mg;
     this.target = mg.owner(this.ref);
-    this.pathFinder = PathFinding.Water(mg);
+    this.pathFinder = new WaterPathFinder(mg);
 
     if (
       this.attacker.unitCount(UnitType.TransportShip) >=
@@ -74,6 +75,16 @@ export class TransportShipExecution implements Execution {
       );
       this.active = false;
       return;
+    }
+
+    if (this.target.isPlayer()) {
+      const targetPlayer = this.target as Player;
+      if (
+        targetPlayer.type() !== PlayerType.Bot &&
+        this.attacker.type() !== PlayerType.Bot
+      ) {
+        this.rejectIncomingAllianceRequests(targetPlayer);
+      }
     }
 
     if (this.target.isPlayer() && !this.attacker.canAttackPlayer(this.target)) {
@@ -173,6 +184,21 @@ export class TransportShipExecution implements Execution {
     ) {
       this.attacker = boatOwner;
       this.originalOwner = boatOwner; // for when this owner disconnects too
+    }
+
+    if (this.pathFinder.rebuilt) {
+      this.motionPlanDst = null; // Force motion plan re-recording
+    }
+
+    // Auto-retreat if destination was destroyed by nuke (turned to water)
+    // Checked every tick (not just on graph rebuild) because graph rebuilds
+    // are throttled and the tile may already be water before the version bumps.
+    if (this.dst !== null && this.mg.isWater(this.dst)) {
+      if (!this.boat.retreating()) {
+        this.boat.orderBoatRetreat();
+      }
+      // Reset cached retreat destination so it's recomputed from current position
+      this.retreatDst = null;
     }
 
     if (this.boat.retreating()) {
@@ -289,5 +315,14 @@ export class TransportShipExecution implements Execution {
 
   isActive(): boolean {
     return this.active;
+  }
+
+  private rejectIncomingAllianceRequests(target: Player) {
+    const request = this.attacker
+      .incomingAllianceRequests()
+      .find((ar) => ar.requestor() === target);
+    if (request !== undefined) {
+      request.reject();
+    }
   }
 }

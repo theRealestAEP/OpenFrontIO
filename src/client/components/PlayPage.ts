@@ -1,5 +1,6 @@
 import { LitElement, html } from "lit";
 import { customElement } from "lit/decorators.js";
+import "./NewsBox";
 
 @customElement("play-page")
 export class PlayPage extends LitElement {
@@ -11,7 +12,7 @@ export class PlayPage extends LitElement {
     return html`
       <div
         id="page-play"
-        class="flex flex-col gap-2 w-full px-0 lg:px-4 lg:my-auto min-h-0"
+        class="flex flex-col gap-2 w-full px-0 lg:px-4 min-h-0"
       >
         <token-login class="absolute"></token-login>
 
@@ -107,6 +108,9 @@ export class PlayPage extends LitElement {
             class="lg:hidden h-[calc(env(safe-area-inset-top)+56px)] lg:col-span-2 -mb-4"
           ></div>
 
+          <!-- News box above username -->
+          <news-box class="lg:col-span-2"></news-box>
+
           <!-- Username: left col -->
           <div
             class="px-2 py-2 bg-[color-mix(in_oklab,var(--frenchBlue)_75%,black)] border-y border-white/10 overflow-visible lg:flex lg:items-center lg:gap-x-2 lg:h-[60px] lg:p-3 lg:relative lg:z-20 lg:border-y-0 lg:rounded-xl"
@@ -121,6 +125,11 @@ export class PlayPage extends LitElement {
                 adaptive-size
                 class="shrink-0 lg:hidden"
               ></pattern-input>
+              <flag-input
+                id="flag-input-mobile"
+                show-select-label
+                class="shrink-0 lg:hidden h-10 w-10"
+              ></flag-input>
             </div>
           </div>
 

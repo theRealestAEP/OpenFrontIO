@@ -59,6 +59,19 @@ Licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
 [Arctic SDI](https://catalogue.arctic-sdi.org/geonetwork/srv/spa/catalog.search#/metadata/8b4f2b34-2d0d-4744-ae0f-d7989b9f7a02)
 Licensed under [CC0 1.0.](https://creativecommons.org/publicdomain/zero/1.0/legalcode.en)
 
+### Milky Way Map
+
+[NASA/JPL-Caltech](https://www.jpl.nasa.gov/images/pia10748-our-milky-way-gets-a-makeover-artist-concept/)
+[Public Domain](https://www.jpl.nasa.gov/jpl-image-use-policy/)
+
+### Strait Of Malacca Map
+
+[https://commons.wikimedia.org/wiki/User:Sadalmelik#/media/File:Sumatra_Topography.png](https://commons.wikimedia.org/wiki/File:Sumatra_Topography.png#/media/File:Sumatra_Topography.png)
+Sadalmelik - Own work
+Topographic map of Sumatra. Created with GMT from publicly released SRTM data. For locator version, see Image:Sumatra Locator Topography.png
+CC BY-SA 3.0
+File:Sumatra Topography.png
+
 ## Icons
 
 ### [The Noun Project](https://thenounproject.com/)
