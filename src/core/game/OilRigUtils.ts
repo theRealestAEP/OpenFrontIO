@@ -41,7 +41,11 @@ export function oilRigEffectiveWeight(game: Game, rig: Unit): number {
   return rig.level() * multiplier;
 }
 
-export function canPlaceOilRigAt(game: Game, tile: TileRef): boolean {
+export function canPlaceOilRigAt(
+  game: Game,
+  tile: TileRef,
+  excludedShipId?: number,
+): boolean {
   if (!game.isValidRef(tile)) {
     return false;
   }
@@ -55,6 +59,19 @@ export function canPlaceOilRigAt(game: Game, tile: TileRef): boolean {
     true,
   )) {
     if (game.euclideanDistSquared(tile, unit.tile()) < minDistSquared) {
+      return false;
+    }
+  }
+
+  for (const ship of game.units(UnitType.OilRigShip)) {
+    if (!ship.isActive() || ship.id() === excludedShipId) {
+      continue;
+    }
+    const targetTile = ship.targetTile();
+    if (
+      targetTile !== undefined &&
+      game.euclideanDistSquared(tile, targetTile) < minDistSquared
+    ) {
       return false;
     }
   }

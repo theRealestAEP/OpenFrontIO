@@ -480,6 +480,7 @@ describe("NationStructureBehavior oil rigs", () => {
       oilFields: () => [offshoreField],
       isOcean: vi.fn((tile: number) => tile >= 20),
       getWaterComponent: vi.fn(() => 7),
+      euclideanDistSquared: vi.fn((a: number, b: number) => Math.abs(a - b)),
       config: () => ({
         gameConfig: () => ({ difficulty: Difficulty.Medium }),
       }),

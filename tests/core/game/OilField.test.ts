@@ -61,6 +61,29 @@ function firstActiveOceanOilTile(game: Game): TileRef {
   throw new Error("Expected at least one ocean oil tile on the test map");
 }
 
+function nearbyOceanOilTileWithinSpacing(
+  game: Game,
+  origin: TileRef,
+): TileRef | null {
+  const maxDistSquared = game.config().structureMinDist() ** 2;
+  const field = game.oilFieldAt(origin);
+  if (field === null) {
+    return null;
+  }
+
+  for (const tile of field.tiles) {
+    if (
+      tile !== origin &&
+      game.isOcean(tile) &&
+      game.euclideanDistSquared(origin, tile) < maxDistSquared
+    ) {
+      return tile;
+    }
+  }
+
+  return null;
+}
+
 function firstMixedOilFieldTiles(game: Game): {
   fieldId: number;
   landTile: TileRef;
@@ -313,6 +336,51 @@ describe("Oil fields", () => {
 
     expect(rig?.isUnderConstruction()).toBe(false);
     expect(game.isOilRigActive(rig!)).toBe(true);
+  });
+
+  test("pending offshore deployments reserve spacing for later oil rigs", async () => {
+    const {
+      game,
+      players: [player],
+    } = await createOilGame("half_land_half_ocean");
+    const oceanTile = firstActiveOceanOilTile(game);
+    const nearbyOceanTile = nearbyOceanOilTileWithinSpacing(game, oceanTile);
+    if (nearbyOceanTile === null) {
+      throw new Error("Expected a nearby offshore oil tile within spacing");
+    }
+
+    buildReachablePort(game, player, oceanTile);
+
+    game.addExecution(
+      new ConstructionExecution(player, UnitType.OilRig, oceanTile),
+    );
+    runUntil(game, () => player.units(UnitType.OilRigShip).length === 1);
+
+    expect(player.canBuild(UnitType.OilRig, nearbyOceanTile)).toBe(false);
+  });
+
+  test("same-tick conflicting offshore deployments only launch one ship", async () => {
+    const {
+      game,
+      players: [player],
+    } = await createOilGame("half_land_half_ocean");
+    const oceanTile = firstActiveOceanOilTile(game);
+    const nearbyOceanTile = nearbyOceanOilTileWithinSpacing(game, oceanTile);
+    if (nearbyOceanTile === null) {
+      throw new Error("Expected a nearby offshore oil tile within spacing");
+    }
+
+    buildReachablePort(game, player, oceanTile);
+
+    game.addExecution(
+      new ConstructionExecution(player, UnitType.OilRig, oceanTile),
+      new ConstructionExecution(player, UnitType.OilRig, nearbyOceanTile),
+    );
+
+    game.executeNextTick();
+    game.executeNextTick();
+
+    expect(player.units(UnitType.OilRigShip)).toHaveLength(1);
   });
 
   test("still finishes offshore construction as a dormant rig if the field depletes during travel", async () => {

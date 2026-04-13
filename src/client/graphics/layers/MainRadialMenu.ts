@@ -90,7 +90,9 @@ export class MainRadialMenu extends LitElement implements Layer {
       if (this.game.myPlayer() === null) {
         return;
       }
-      this.clickedTile = this.game.ref(worldCoords.x, worldCoords.y);
+      this.clickedTile = this.game.resolveOffshoreInteractionTile(
+        this.game.ref(worldCoords.x, worldCoords.y),
+      );
       this.game
         .myPlayer()!
         .actions(this.clickedTile)

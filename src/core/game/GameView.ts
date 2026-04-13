@@ -42,7 +42,6 @@ import {
 } from "./GameUpdates";
 import { MotionPlanRecord, unpackMotionPlans } from "./MotionPlans";
 import { OilFieldManager } from "./OilField";
-import { isOffshoreOilRigServiced } from "./OilRigUtils";
 import { TerrainMapData } from "./TerrainMapLoader";
 import { TerraNulliusImpl } from "./TerraNulliusImpl";
 import { UnitGrid, UnitPredicate } from "./UnitGrid";
@@ -679,6 +678,7 @@ export class GameView implements GameMap {
   private readonly oilFieldManager: OilFieldManager;
   private waterComponents: ConnectedComponents | null = null;
   private waterComponentsDirty = true;
+  private activePortComponentsByOwner = new Map<PlayerID, Set<number>>();
 
   constructor(
     public worker: WorkerClient,
@@ -767,6 +767,7 @@ export class GameView implements GameMap {
     this.toDelete.clear();
 
     this.lastUpdate = gu;
+    this.activePortComponentsByOwner.clear();
 
     this.updatedTiles = [];
     this.updatedTerrainTiles = [];
@@ -1129,7 +1130,39 @@ export class GameView implements GameMap {
     if (!this.isOcean(unit.tile())) {
       return true;
     }
-    return isOffshoreOilRigServiced(this, unit);
+    const rigComponent = this.getWaterComponent(unit.tile());
+    if (rigComponent === null) {
+      return false;
+    }
+    return this.activePortComponents(unit.owner()).has(rigComponent);
+  }
+
+  resolveOffshoreInteractionTile(
+    tile: TileRef,
+    searchRange: number = 6,
+  ): TileRef {
+    if (!this.isOcean(tile)) {
+      return tile;
+    }
+
+    let bestTile: TileRef | null = null;
+    let bestDistSquared = Number.POSITIVE_INFINITY;
+    for (const { unit, distSquared } of this.nearbyUnits(
+      tile,
+      searchRange,
+      UnitType.OilRig,
+      undefined,
+    )) {
+      if (unit.isUnderConstruction() || !this.isOcean(unit.tile())) {
+        continue;
+      }
+      if (distSquared < bestDistSquared) {
+        bestTile = unit.tile();
+        bestDistSquared = distSquared;
+      }
+    }
+
+    return bestTile ?? tile;
   }
 
   recentlyUpdatedTerrainTiles(): TileRef[] {
@@ -1451,6 +1484,7 @@ export class GameView implements GameMap {
     this.waterComponents = new ConnectedComponents(this, false);
     this.waterComponents.initialize();
     this.waterComponentsDirty = false;
+    this.activePortComponentsByOwner.clear();
   }
 
   private waterComponentIdAt(tile: TileRef): number | null {
@@ -1459,5 +1493,27 @@ export class GameView implements GameMap {
       return null;
     }
     return component;
+  }
+
+  private activePortComponents(owner: PlayerView): Set<number> {
+    const ownerId = owner.id();
+    const cached = this.activePortComponentsByOwner.get(ownerId);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const components = new Set<number>();
+    for (const port of owner.units(UnitType.Port)) {
+      if (!port.isActive() || port.isUnderConstruction()) {
+        continue;
+      }
+      const component = this.getWaterComponent(port.tile());
+      if (component !== null) {
+        components.add(component);
+      }
+    }
+
+    this.activePortComponentsByOwner.set(ownerId, components);
+    return components;
   }
 }

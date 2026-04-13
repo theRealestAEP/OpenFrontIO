@@ -50,6 +50,11 @@ export class OffshoreOilRigExecution implements Execution {
       return;
     }
 
+    if (!canPlaceOilRigAt(mg, this.targetTile)) {
+      this.active = false;
+      return;
+    }
+
     this.deploymentCost = mg.unitInfo(UnitType.OilRigShip).cost(mg, player);
     this.ship = player.buildUnit(UnitType.OilRigShip, port.tile(), {
       targetTile: this.targetTile,
@@ -119,12 +124,12 @@ export class OffshoreOilRigExecution implements Execution {
   private canContinueDeployment(): boolean {
     return (
       this.game.isOcean(this.targetTile) &&
-      canPlaceOilRigAt(this.game, this.targetTile)
+      this.canPlaceTargetTile()
     );
   }
 
   private arrive(): void {
-    if (!this.canContinueDeployment()) {
+    if (!this.canPlaceTargetTile()) {
       this.cancelDeployment();
       return;
     }
@@ -212,6 +217,14 @@ export class OffshoreOilRigExecution implements Execution {
     };
     this.game.recordMotionPlan(motionPlan);
     this.motionPlanDst = this.targetTile;
+  }
+
+  private canPlaceTargetTile(): boolean {
+    return canPlaceOilRigAt(
+      this.game,
+      this.targetTile,
+      this.ship?.id(),
+    );
   }
 
   private playerAsImpl(): PlayerImpl | null {

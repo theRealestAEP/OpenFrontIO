@@ -564,7 +564,7 @@ export class ClientGameRunner {
       return;
     }
     console.log(`clicked cell ${cell}`);
-    const tile = this.gameView.ref(cell.x, cell.y);
+    const tile = this.resolveInteractionTile(this.gameView.ref(cell.x, cell.y));
     if (
       this.gameView.isLand(tile) &&
       !this.gameView.hasOwner(tile) &&
@@ -733,7 +733,7 @@ export class ClientGameRunner {
     if (!this.gameView.isValidCoord(cell.x, cell.y)) {
       return null;
     }
-    return this.gameView.ref(cell.x, cell.y);
+    return this.resolveInteractionTile(this.gameView.ref(cell.x, cell.y));
   }
 
   private canBoatAttack(buildables: BuildableUnit[]): false | TileRef {
@@ -768,6 +768,10 @@ export class ClientGameRunner {
 
   private onMouseMove(event: MouseMoveEvent) {
     this.lastMousePosition = { x: event.x, y: event.y };
+  }
+
+  private resolveInteractionTile(tile: TileRef): TileRef {
+    return this.gameView.resolveOffshoreInteractionTile(tile);
   }
 
   private onConnectionCheck() {

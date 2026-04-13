@@ -97,6 +97,15 @@ const OIL_UNITS_PER_SECOND_BASE = 30;
 const OIL_MAX_PAYBACK_SECONDS = 180;
 const OIL_MIN_REMAINING_VALUE_MULTIPLIER = 2;
 const OIL_RIGS_PER_FIELD_TARGET = 2;
+const OIL_BUILD_CACHE_TTL_TICKS = 30;
+const MAX_OFFSHORE_CANDIDATES_PER_FIELD = 16;
+
+interface OilBuildCache {
+  cachedAtTick: number;
+  candidateTiles: TileRef[];
+  lastTileChange: number;
+  reachableFieldCount: number;
+}
 
 export class NationStructureBehavior {
   private reachableStationsCache: Array<{
@@ -104,6 +113,7 @@ export class NationStructureBehavior {
     cluster: Cluster | null;
     weight: number;
   }> | null = null;
+  private oilBuildCache: OilBuildCache | null = null;
 
   constructor(
     private random: PseudoRandom,
@@ -510,33 +520,9 @@ export class NationStructureBehavior {
   }
 
   private randOwnedOilTileArray(numTiles: number): TileRef[] {
-    const tiles = new Set<TileRef>();
-
-    for (const tile of this.player.tiles()) {
-      if (this.game.oilFieldAt(tile) !== null) {
-        tiles.add(tile);
-      }
-    }
-
-    const portComponents = ownedPortWaterComponents(this.game, this.player);
-    if (portComponents.size > 0) {
-      for (const field of this.game.oilFields()) {
-        if (field.remainingReserve <= 0) {
-          continue;
-        }
-        for (const tile of field.tiles) {
-          if (!this.game.isOcean(tile)) {
-            continue;
-          }
-          const component = this.game.getWaterComponent(tile);
-          if (component !== null && portComponents.has(component)) {
-            tiles.add(tile);
-          }
-        }
-      }
-    }
-
-    return Array.from(this.arraySampler(Array.from(tiles), numTiles));
+    return Array.from(
+      this.arraySampler(this.getOilBuildCache().candidateTiles, numTiles),
+    );
   }
 
   private *arraySampler<T>(a: T[], sampleSize: number): Generator<T> {
@@ -1179,18 +1165,7 @@ export class NationStructureBehavior {
   }
 
   private ownedActiveOilFieldCount(): number {
-    const ownedTiles = this.player.tiles();
-    const portComponents = ownedPortWaterComponents(this.game, this.player);
-    let count = 0;
-    for (const field of this.game.oilFields()) {
-      if (field.remainingReserve <= 0) {
-        continue;
-      }
-      if (this.fieldIsReachableForOilRig(field, ownedTiles, portComponents)) {
-        count += 1;
-      }
-    }
-    return count;
+    return this.getOilBuildCache().reachableFieldCount;
   }
 
   private fieldIsReachableForOilRig(
@@ -1203,5 +1178,80 @@ export class NationStructureBehavior {
     }
 
     return oilFieldHasReachableOffshoreTile(this.game, field, portComponents);
+  }
+
+  private getOilBuildCache(): OilBuildCache {
+    const currentTick =
+      typeof this.game.ticks === "function" ? this.game.ticks() : 0;
+    const lastTileChange =
+      typeof this.player.lastTileChange === "function"
+        ? this.player.lastTileChange()
+        : -1;
+    if (
+      this.oilBuildCache !== null &&
+      this.oilBuildCache.lastTileChange === lastTileChange &&
+      currentTick - this.oilBuildCache.cachedAtTick < OIL_BUILD_CACHE_TTL_TICKS
+    ) {
+      return this.oilBuildCache;
+    }
+
+    const candidateTiles = new Set<TileRef>();
+    const reachableFieldIds = new Set<number>();
+
+    const ownedTiles = this.player.tiles();
+    const portComponents = ownedPortWaterComponents(this.game, this.player);
+    for (const field of this.game.oilFields()) {
+      if (field.remainingReserve <= 0) {
+        continue;
+      }
+
+      let fieldIsReachable = false;
+      const offshoreCandidates: TileRef[] = [];
+      for (const tile of field.tiles) {
+        if (ownedTiles.has(tile)) {
+          candidateTiles.add(tile);
+          fieldIsReachable = true;
+        }
+        if (portComponents.size === 0 || !this.game.isOcean(tile)) {
+          continue;
+        }
+        const component = this.game.getWaterComponent(tile);
+        if (component === null || !portComponents.has(component)) {
+          continue;
+        }
+
+        offshoreCandidates.push(tile);
+        fieldIsReachable = true;
+      }
+
+      if (offshoreCandidates.length > 0) {
+        offshoreCandidates.sort(
+          (a, b) =>
+            this.game.euclideanDistSquared(a, field.center) -
+            this.game.euclideanDistSquared(b, field.center),
+        );
+        for (const tile of this.arraySampler(
+          offshoreCandidates.slice(
+            0,
+            MAX_OFFSHORE_CANDIDATES_PER_FIELD * 4,
+          ),
+          MAX_OFFSHORE_CANDIDATES_PER_FIELD,
+        )) {
+          candidateTiles.add(tile);
+        }
+      }
+
+      if (fieldIsReachable) {
+        reachableFieldIds.add(field.id);
+      }
+    }
+
+    this.oilBuildCache = {
+      cachedAtTick: currentTick,
+      candidateTiles: Array.from(candidateTiles),
+      lastTileChange,
+      reachableFieldCount: reachableFieldIds.size,
+    };
+    return this.oilBuildCache;
   }
 }

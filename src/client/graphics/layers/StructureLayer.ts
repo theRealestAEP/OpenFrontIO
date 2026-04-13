@@ -234,6 +234,10 @@ export class StructureLayer implements Layer {
       unitType === UnitType.OilRig && this.game.isOcean(unit.tile())
         ? `${UnitType.OilRig}-offshore`
         : unitType;
+    const isInactiveOilRig =
+      unitType === UnitType.OilRig && !unit.isUnderConstruction()
+        ? !this.game.isOilRigActive(unit)
+        : false;
     if (!this.isUnitTypeSupported(unitType)) return;
 
     const config = this.unitConfigs[unitType];
@@ -246,7 +250,7 @@ export class StructureLayer implements Layer {
       borderColor = underConstructionColor;
     } else {
       icon = this.unitIcons.get(iconType);
-      if (unit.type() === UnitType.OilRig && !this.game.isOilRigActive(unit)) {
+      if (isInactiveOilRig) {
         borderColor = underConstructionColor;
       }
     }
@@ -271,7 +275,15 @@ export class StructureLayer implements Layer {
     const startX = this.game.x(unit.tile()) - (scaledWidth >> 1);
     const startY = this.game.y(unit.tile()) - (scaledHeight >> 1);
 
-    this.renderIcon(icon, startX, startY - 4, scaledWidth, scaledHeight, unit);
+    this.renderIcon(
+      icon,
+      startX,
+      startY - 4,
+      scaledWidth,
+      scaledHeight,
+      unit,
+      isInactiveOilRig,
+    );
   }
 
   private renderIcon(
@@ -281,6 +293,7 @@ export class StructureLayer implements Layer {
     width: number,
     height: number,
     unit: UnitView,
+    isInactiveOilRig: boolean,
   ) {
     let color = unit.owner().borderColor();
     if (unit.isUnderConstruction()) {
@@ -305,7 +318,7 @@ export class StructureLayer implements Layer {
 
     // Draw the final result to the main canvas
     this.context.save();
-    if (unit.type() === UnitType.OilRig && !this.game.isOilRigActive(unit)) {
+    if (isInactiveOilRig) {
       this.context.globalAlpha = 0.45;
     }
     this.context.drawImage(this.tempCanvas, startX * 2, startY * 2);

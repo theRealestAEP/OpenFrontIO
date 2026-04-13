@@ -1,8 +1,8 @@
 import { Config, Theme } from "../../../core/configuration/Config";
 import { EventBus } from "../../../core/EventBus";
 import { UnitType } from "../../../core/game/Game";
-import { GameView } from "../../../core/game/GameView";
 import { GameUpdateType } from "../../../core/game/GameUpdates";
+import { GameView } from "../../../core/game/GameView";
 import { AlternateViewEvent } from "../../InputHandler";
 import { TransformHandler } from "../TransformHandler";
 import { UIState } from "../UIState";
@@ -16,6 +16,8 @@ export class TerrainLayer implements Layer {
   private oilContext: CanvasRenderingContext2D;
   private alternativeView = false;
   private lastOilReserves = new Map<number, number>();
+  private oilOverlayDirty = true;
+  private wasRenderingOilOverlay = false;
   private theme: Theme;
   private config: Config;
 
@@ -35,19 +37,26 @@ export class TerrainLayer implements Layer {
       this.redraw();
       return;
     }
+
+    const shouldRenderOilOverlay = this.shouldRenderOilOverlay();
     const oilUpdates =
       this.game.updatesSinceLastTick()?.[GameUpdateType.OilFieldState] ?? [];
-    let oilChanged = false;
     for (const update of oilUpdates) {
-      if (this.lastOilReserves.get(update.fieldId) !== update.remainingReserve) {
+      if (
+        this.lastOilReserves.get(update.fieldId) !== update.remainingReserve
+      ) {
         this.lastOilReserves.set(update.fieldId, update.remainingReserve);
-        oilChanged = true;
+        this.oilOverlayDirty = true;
       }
     }
 
-    if (oilChanged) {
+    if (
+      shouldRenderOilOverlay &&
+      (this.oilOverlayDirty || !this.wasRenderingOilOverlay)
+    ) {
       this.redrawOilOverlay();
     }
+    this.wasRenderingOilOverlay = shouldRenderOilOverlay;
 
     // Repaint terrain for tiles whose terrain changed (e.g. nuke
     // turning land to water).
@@ -109,7 +118,13 @@ export class TerrainLayer implements Layer {
     if (oilContext === null) throw new Error("2d context not supported");
     this.oilContext = oilContext;
 
-    this.redrawOilOverlay();
+    this.oilOverlayDirty = true;
+    if (this.shouldRenderOilOverlay()) {
+      this.redrawOilOverlay();
+      this.wasRenderingOilOverlay = true;
+    } else {
+      this.wasRenderingOilOverlay = false;
+    }
   }
 
   initImageData() {
@@ -158,6 +173,7 @@ export class TerrainLayer implements Layer {
     }
 
     this.oilContext.putImageData(imageData, 0, 0);
+    this.oilOverlayDirty = false;
   }
 
   private shouldRenderOilOverlay(): boolean {
