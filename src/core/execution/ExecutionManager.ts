@@ -1,4 +1,5 @@
 import { Execution, Game } from "../game/Game";
+import { isZombiePlayerInfo } from "../game/ZombieUtils";
 import { PseudoRandom } from "../PseudoRandom";
 import { ClientID, GameID, StampedIntent, Turn } from "../Schemas";
 import { simpleHash } from "../Util";
@@ -28,6 +29,7 @@ import { TransportShipExecution } from "./TransportShipExecution";
 import { TribeSpawner } from "./TribeSpawner";
 import { UpgradeStructureExecution } from "./UpgradeStructureExecution";
 import { PlayerSpawner } from "./utils/PlayerSpawner";
+import { ZombieNationExecution } from "./ZombieNationExecution";
 
 export class Executor {
   // private random = new PseudoRandom(999)
@@ -137,7 +139,11 @@ export class Executor {
   nationExecutions(): Execution[] {
     const execs: Execution[] = [];
     for (const nation of this.mg.nations()) {
-      execs.push(new NationExecution(this.gameID, nation));
+      if (isZombiePlayerInfo(nation.playerInfo)) {
+        execs.push(new ZombieNationExecution(this.gameID, nation));
+      } else {
+        execs.push(new NationExecution(this.gameID, nation));
+      }
     }
     return execs;
   }

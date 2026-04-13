@@ -235,6 +235,7 @@ export class InputHandler {
       altKey: "AltLeft",
       buildCity: "Digit1",
       buildFactory: "Digit2",
+      buildResearchLab: "KeyL",
       buildPort: "Digit3",
       buildDefensePost: "Digit4",
       buildMissileSilo: "Digit5",
@@ -725,6 +726,7 @@ export class InputHandler {
     }> = [
       { key: "buildCity", type: UnitType.City },
       { key: "buildFactory", type: UnitType.Factory },
+      { key: "buildResearchLab", type: UnitType.ResearchLab },
       { key: "buildPort", type: UnitType.Port },
       { key: "buildDefensePost", type: UnitType.DefensePost },
       { key: "buildMissileSilo", type: UnitType.MissileSilo },

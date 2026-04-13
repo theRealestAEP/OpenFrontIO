@@ -12,11 +12,20 @@ import {
   TerraNullius,
 } from "../game/Game";
 import { TileRef } from "../game/GameMap";
+import {
+  canAutoAnnexTarget,
+  isCuredPlayer,
+  isZombiePlayer,
+  ZOMBIE_MAX_ATTACK_STEPS_PER_TICK,
+  ZOMBIE_MAX_TERRA_NULLIUS_ATTACK_STEPS_PER_TICK,
+  ZOMBIE_UNCURED_ATTACK_INTERVAL_TICKS,
+} from "../game/ZombieUtils";
 import { PseudoRandom } from "../PseudoRandom";
 import { assertNever } from "../Util";
 import { FlatBinaryHeap } from "./utils/FlatBinaryHeap"; // adjust path if needed
 
 const malusForRetreat = 25;
+const MAX_ATTACK_STEPS_PER_TICK = 2000;
 export class AttackExecution implements Execution {
   private active: boolean = true;
   private toConquer = new FlatBinaryHeap();
@@ -248,6 +257,15 @@ export class AttackExecution implements Execution {
       return;
     }
 
+    if (
+      targetPlayer &&
+      isZombiePlayer(targetPlayer) &&
+      !isCuredPlayer(this._owner) &&
+      ticks % ZOMBIE_UNCURED_ATTACK_INTERVAL_TICKS !== 0
+    ) {
+      return;
+    }
+
     let numTilesPerTick = this.mg
       .config()
       .attackTilesPerTick(
@@ -257,7 +275,13 @@ export class AttackExecution implements Execution {
         this.attack.borderSize() + this.random.nextInt(0, 5),
       );
 
-    while (numTilesPerTick > 0) {
+    const maxAttackStepsPerTick = this.maxAttackStepsPerTick();
+    let attackSteps = 0;
+    while (
+      numTilesPerTick > 0 &&
+      attackSteps < maxAttackStepsPerTick
+    ) {
+      attackSteps++;
       if (troopCount < 1) {
         this.attack.delete();
         this.active = false;
@@ -265,7 +289,9 @@ export class AttackExecution implements Execution {
       }
 
       if (this.toConquer.size() === 0) {
-        this.refreshToConquer();
+        if (this.sourceTile === null) {
+          this.refreshToConquer();
+        }
         this.retreat();
         return;
       }
@@ -303,6 +329,9 @@ export class AttackExecution implements Execution {
         targetPlayer.removeTroops(defenderTroopLoss);
       }
       this._owner.conquer(tileToConquer);
+      if (this.collapseZombieAfterCureBreach(targetPlayer)) {
+        return;
+      }
       this.handleDeadDefender();
     }
   }
@@ -353,14 +382,62 @@ export class AttackExecution implements Execution {
 
       const priority =
         (this.random.nextInt(0, 7) + 10) * (1 - numOwnedByMe * 0.5 + mag / 2) +
-        tickNow;
+        tickNow -
+        (this.target === this.mg.terraNullius() &&
+        isZombiePlayer(this._owner) &&
+        this.mg.hasFallout(neighbor)
+          ? 1_000
+          : 0);
 
       this.toConquer.enqueue(neighbor, priority);
     }
   }
 
+  private maxAttackStepsPerTick(): number {
+    if (isZombiePlayer(this._owner)) {
+      return this.target === this.mg.terraNullius()
+        ? ZOMBIE_MAX_TERRA_NULLIUS_ATTACK_STEPS_PER_TICK
+        : ZOMBIE_MAX_ATTACK_STEPS_PER_TICK;
+    }
+
+    if (this.target.isPlayer() && isZombiePlayer(this.target)) {
+      return ZOMBIE_MAX_ATTACK_STEPS_PER_TICK;
+    }
+
+    return MAX_ATTACK_STEPS_PER_TICK;
+  }
+
+  private collapseZombieAfterCureBreach(target: Player | null): boolean {
+    if (
+      target === null ||
+      !isZombiePlayer(target) ||
+      !isCuredPlayer(this._owner) ||
+      !target.isAlive()
+    ) {
+      return false;
+    }
+
+    // Cure kills the zombie faction as a faction, rather than gifting its
+    // remaining empire to the attacker and distorting the endgame winner.
+    const remainingTiles = [...target.tiles()];
+    if (remainingTiles.length === 0) {
+      return false;
+    }
+
+    for (const tile of remainingTiles) {
+      if (this.mg.owner(tile) === target) {
+        target.relinquish(tile);
+      }
+    }
+
+    target.removeTroops(target.troops());
+    this.toConquer.clear();
+    return true;
+  }
+
   private handleDeadDefender() {
     if (!(this.target.isPlayer() && this.target.numTilesOwned() < 100)) return;
+    if (!canAutoAnnexTarget(this._owner, this.target)) return;
 
     this.mg.conquerPlayer(this._owner, this.target);
 

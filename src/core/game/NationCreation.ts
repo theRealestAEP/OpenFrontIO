@@ -8,7 +8,9 @@ import {
   HumansVsNations,
   Nation,
   PlayerInfo,
+  PlayerSpecialRole,
   PlayerType,
+  SpecialRuleset,
 } from "./Game";
 import { Nation as ManifestNation } from "./TerrainMapLoader";
 
@@ -41,23 +43,38 @@ export function createNationsForGame(
     gameStart.config.playerTeams === HumansVsNations;
 
   const configNations = gameStart.config.nations;
+  const zombieRuleset =
+    gameStart.config.specialRuleset === SpecialRuleset.ZombieSurvival;
   if (configNations === "disabled") {
-    return [];
+    return zombieRuleset
+      ? maybeReplaceNationWithZombie([], manifestNations, random)
+      : [];
   }
   // If nations count is explicitly set, use that exact count
   if (typeof configNations === "number") {
-    return createRandomNations(
+    const nations = createRandomNations(
       configNations,
       manifestNations,
       toNation,
       random,
     );
+    return zombieRuleset
+      ? maybeReplaceNationWithZombie(nations, manifestNations, random)
+      : nations;
   }
 
   if (gameStart.config.gameType === GameType.Public) {
     // For HvN, balance nation count to match human count
     if (isHumansVsNations) {
-      return createRandomNations(numHumans, manifestNations, toNation, random);
+      const nations = createRandomNations(
+        numHumans,
+        manifestNations,
+        toNation,
+        random,
+      );
+      return zombieRuleset
+        ? maybeReplaceNationWithZombie(nations, manifestNations, random)
+        : nations;
     }
 
     // For compact maps, use only 25% of nations (minimum 1)
@@ -68,11 +85,65 @@ export function createNationsForGame(
       );
       const shuffled = random.shuffleArray(manifestNations);
       const slicedNations = shuffled.slice(0, targetCount);
-      return slicedNations.map(toNation);
+      const nations = slicedNations.map(toNation);
+      return zombieRuleset
+        ? maybeReplaceNationWithZombie(nations, manifestNations, random)
+        : nations;
     }
   }
 
-  return manifestNations.map(toNation);
+  const nations = manifestNations.map(toNation);
+  return zombieRuleset
+    ? maybeReplaceNationWithZombie(nations, manifestNations, random)
+    : nations;
+}
+
+function maybeReplaceNationWithZombie(
+  nations: Nation[],
+  manifestNations: ManifestNation[],
+  random: PseudoRandom,
+): Nation[] {
+  const zombieName = "Zombie Nation";
+  const zombieNationFrom = (nation: Nation): Nation =>
+    new Nation(
+      nation.spawnCell,
+      new PlayerInfo(
+        zombieName,
+        PlayerType.Nation,
+        null,
+        random.nextID(),
+        false,
+        null,
+        PlayerSpecialRole.Zombie,
+      ),
+    );
+
+  if (nations.length > 0) {
+    const zombieIndex = random.nextInt(0, nations.length);
+    const next = [...nations];
+    next[zombieIndex] = zombieNationFrom(nations[zombieIndex]);
+    return next;
+  }
+
+  if (manifestNations.length === 0) {
+    return nations;
+  }
+
+  const fallback = manifestNations[random.nextInt(0, manifestNations.length)];
+  return [
+    new Nation(
+      new Cell(fallback.coordinates[0], fallback.coordinates[1]),
+      new PlayerInfo(
+        zombieName,
+        PlayerType.Nation,
+        null,
+        random.nextID(),
+        false,
+        null,
+        PlayerSpecialRole.Zombie,
+      ),
+    ),
+  ];
 }
 
 /**

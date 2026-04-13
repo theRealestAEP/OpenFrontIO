@@ -1,5 +1,10 @@
 import { Execution, Game, Player, Unit, UnitType } from "../game/Game";
 import { TileRef } from "../game/GameMap";
+import {
+  isCuredPlayer,
+  isZombiePlayer,
+  ZOMBIE_TRANSPORT_DEATH_BURST_DAMAGE,
+} from "../game/ZombieUtils";
 import { PathFinding } from "../pathfinding/PathFinder";
 import { PathStatus, SteppingPathFinder } from "../pathfinding/types";
 import { PseudoRandom } from "../PseudoRandom";
@@ -26,14 +31,24 @@ export class ShellExecution implements Execution {
   }
 
   tick(ticks: number): void {
+    if (
+      !this.target.isActive() ||
+      this.target.owner() === this._owner ||
+      !this.ownerUnit.isActive()
+    ) {
+      if (this.shell?.isActive()) {
+        this.shell.delete(false);
+      }
+      this.active = false;
+      return;
+    }
+
     this.shell ??= this._owner.buildUnit(UnitType.Shell, this.spawn, {});
     if (!this.shell.isActive()) {
       this.active = false;
       return;
     }
     if (
-      !this.target.isActive() ||
-      this.target.owner() === this.shell.owner() ||
       (this.destroyAtTick !== -1 && this.mg.ticks() >= this.destroyAtTick)
     ) {
       this.shell.delete(false);
@@ -52,7 +67,20 @@ export class ShellExecution implements Execution {
       );
       if (result.status === PathStatus.COMPLETE) {
         this.active = false;
+        const targetWasActive = this.target.isActive();
+        const targetOwner = this.target.owner();
         this.target.modifyHealth(-this.effectOnTarget(), this._owner);
+        if (
+          targetWasActive &&
+          !this.target.isActive() &&
+          this.ownerUnit.type() === UnitType.Warship &&
+          this.ownerUnit.isActive() &&
+          this.target.type() === UnitType.TransportShip &&
+          isZombiePlayer(targetOwner) &&
+          !isCuredPlayer(this.ownerUnit.owner())
+        ) {
+          this.ownerUnit.modifyHealth(-ZOMBIE_TRANSPORT_DEATH_BURST_DAMAGE, targetOwner);
+        }
         this.shell.setReachedTarget();
         this.shell.delete(false);
         return;

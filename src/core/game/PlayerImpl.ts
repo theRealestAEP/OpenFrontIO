@@ -19,12 +19,14 @@ import {
   BuildableUnit,
   Cell,
   ColoredTeams,
+  CureState,
   Embargo,
   EmojiMessage,
   GameMode,
   Gold,
   MessageType,
   MutableAlliance,
+  Nukes,
   Player,
   PlayerBuildable,
   PlayerBuildableUnitType,
@@ -54,6 +56,12 @@ import {
   canBuildTransportShip,
 } from "./TransportShipUtils";
 import { UnitImpl } from "./UnitImpl";
+import {
+  canPlayerResearchCure,
+  hasZombieStartDelayProtection,
+  isZombiePlayer,
+  isZombieRulesetGame,
+} from "./ZombieUtils";
 
 interface Target {
   tick: Tick;
@@ -104,6 +112,8 @@ export class PlayerImpl implements Player {
 
   private _spawnTile: TileRef | undefined;
   private _isDisconnected = false;
+  private _cureState: CureState = CureState.None;
+  private _cureProgressRemainingTicks: Tick | null = null;
 
   constructor(
     private mg: GameImpl,
@@ -133,11 +143,15 @@ export class PlayerImpl implements Player {
       team: this.team() ?? undefined,
       smallID: this.smallID(),
       playerType: this.type(),
+      specialRole: this.specialRole() ?? undefined,
       isAlive: this.isAlive(),
       isDisconnected: this.isDisconnected(),
       tilesOwned: this.numTilesOwned(),
       gold: this._gold,
       troops: this.troops(),
+      cureState: this.cureState(),
+      cureProgressRemainingTicks:
+        this.cureProgressRemainingTicks() ?? undefined,
       allies: this.alliances().map((a) => a.other(this).smallID()),
       embargoes: new Set([...this.embargoes.keys()].map((p) => p.toString())),
       isTraitor: this.isTraitor(),
@@ -204,6 +218,10 @@ export class PlayerImpl implements Player {
 
   type(): PlayerType {
     return this.playerInfo.playerType;
+  }
+
+  specialRole() {
+    return this.playerInfo.specialRole;
   }
 
   units(...types: UnitType[]): Unit[] {
@@ -288,6 +306,9 @@ export class PlayerImpl implements Player {
     let total = 0;
     for (const unit of this._units) {
       if (unit.type() === type) {
+        if (unit.isRuined()) {
+          continue;
+        }
         total += unit.level();
       }
     }
@@ -299,6 +320,9 @@ export class PlayerImpl implements Player {
     let total = 0;
     for (const unit of this._units) {
       if (unit.type() === type) {
+        if (unit.isRuined()) {
+          continue;
+        }
         if (unit.isUnderConstruction()) {
           total++;
         } else {
@@ -469,6 +493,9 @@ export class PlayerImpl implements Player {
 
   canSendAllianceRequest(other: Player): boolean {
     if (this.mg.config().disableAlliances()) {
+      return false;
+    }
+    if (isZombiePlayer(this) || isZombiePlayer(other)) {
       return false;
     }
     if (other === this) {
@@ -825,6 +852,9 @@ export class PlayerImpl implements Player {
   }
 
   canTrade(other: Player): boolean {
+    if (isZombiePlayer(this) || isZombiePlayer(other)) {
+      return false;
+    }
     const embargo =
       other.hasEmbargoAgainst(this) || this.hasEmbargoAgainst(other);
     return !embargo && other.id() !== this.id();
@@ -929,6 +959,24 @@ export class PlayerImpl implements Player {
     return Number(this._troops);
   }
 
+  cureState(): CureState {
+    return this._cureState;
+  }
+
+  setCureState(state: CureState): void {
+    if (this._cureState !== state) {
+      this._cureState = state;
+    }
+  }
+
+  cureProgressRemainingTicks(): Tick | null {
+    return this._cureProgressRemainingTicks;
+  }
+
+  setCureProgressRemainingTicks(ticks: Tick | null): void {
+    this._cureProgressRemainingTicks = ticks;
+  }
+
   addTroops(troops: number): void {
     if (troops < 0) {
       this.removeTroops(-1 * troops);
@@ -1012,6 +1060,49 @@ export class PlayerImpl implements Player {
     unitType: UnitType,
     knownCost: Gold | null = null,
   ): boolean {
+    if (
+      isZombiePlayer(this) &&
+      (Structures.has(unitType) ||
+        unitType === UnitType.Warship ||
+        Nukes.has(unitType))
+    ) {
+      return false;
+    }
+
+    if (unitType === UnitType.ResearchLab) {
+      if (!isZombieRulesetGame(this.mg)) {
+        return false;
+      }
+      if (!canPlayerResearchCure(this)) {
+        return false;
+      }
+      if (this.cureState() === CureState.Cured) {
+        return false;
+      }
+      if (this.hasActiveResearchLab()) {
+        return false;
+      }
+      if (
+        this.mg.config().gameConfig().gameMode === GameMode.Team &&
+        this.team() !== null
+      ) {
+        const teammateHasLab = this.mg
+          .players()
+          .some(
+            (player) =>
+              player !== this &&
+              player.team() === this.team() &&
+              (player.cureState() === CureState.Cured ||
+                player
+                  .units(UnitType.ResearchLab)
+                  .some((unit) => unit.isActive() && !unit.isRuined())),
+          );
+        if (teammateHasLab) {
+          return false;
+        }
+      }
+    }
+
     if (this.mg.config().isUnitDisabled(unitType)) {
       return false;
     }
@@ -1029,6 +1120,12 @@ export class PlayerImpl implements Player {
     return Boolean(this.mg.config().unitInfo(unitType).upgradable);
   }
 
+  private hasActiveResearchLab(): boolean {
+    return this.units(UnitType.ResearchLab).some(
+      (unit) => unit.isActive() && !unit.isRuined(),
+    );
+  }
+
   private isUnitValidToUpgrade(unit: Unit): boolean {
     if (unit.isUnderConstruction()) {
       return false;
@@ -1044,6 +1141,9 @@ export class PlayerImpl implements Player {
 
   public canUpgradeUnit(unit: Unit): boolean {
     if (!this.canUpgradeUnitType(unit.type())) {
+      return false;
+    }
+    if (unit.isRuined()) {
       return false;
     }
     if (!this.canBuildUnitType(unit.type())) {
@@ -1164,6 +1264,7 @@ export class PlayerImpl implements Player {
       case UnitType.SAMLauncher:
       case UnitType.City:
       case UnitType.Factory:
+      case UnitType.ResearchLab:
         return this.landBasedStructureSpawn(targetTile, validTiles);
       default:
         assertNever(unitType);
@@ -1246,7 +1347,8 @@ export class PlayerImpl implements Player {
     const bestPort = findClosestBy(
       this.units(UnitType.Port),
       (port) => this.mg.manhattanDist(port.tile(), tile),
-      (port) => port.isActive() && !port.isUnderConstruction(),
+      (port) =>
+        port.isActive() && !port.isUnderConstruction() && !port.isRuined(),
     );
 
     return bestPort?.tile() ?? false;
@@ -1393,6 +1495,9 @@ export class PlayerImpl implements Player {
     player: Player,
     treatAFKFriendly: boolean = false,
   ): boolean {
+    if (hasZombieStartDelayProtection(this.mg, player)) {
+      return false;
+    }
     if (this.type() === PlayerType.Bot) {
       // Bots are not affected by immunity
       return !this.isFriendly(player, treatAFKFriendly);

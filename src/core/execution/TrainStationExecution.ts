@@ -42,6 +42,7 @@ export class TrainStationExecution implements Execution {
       this.mg.railNetwork().connectStation(this.station);
     }
     if (!this.station.isActive()) {
+      this.mg.railNetwork().removeStation(this.unit);
       this.active = false;
       return;
     }

@@ -8,6 +8,11 @@ import {
   UnitType,
 } from "../game/Game";
 import { TileRef } from "../game/GameMap";
+import {
+  canAutoAnnexTarget,
+  isZombiePlayer,
+  isZombieRulesetGame,
+} from "../game/ZombieUtils";
 import { calculateBoundingBox, getMode, inscribed, simpleHash } from "../Util";
 
 interface ClusterTraversalState {
@@ -60,9 +65,15 @@ export class PlayerExecution implements Execution {
         u.decreaseLevel(captor);
         if (u.isActive()) {
           captor.captureUnit(u);
+          if (isZombiePlayer(captor)) {
+            u.setRuined(true);
+          }
         }
       } else {
         captor.captureUnit(u);
+        if (isZombiePlayer(captor)) {
+          u.setRuined(true);
+        }
       }
     }
 
@@ -115,6 +126,8 @@ export class PlayerExecution implements Execution {
 
   private removeClusters() {
     const clusters = this.calculateClusters();
+    const zombieClusterImmune =
+      isZombieRulesetGame(this.mg) && isZombiePlayer(this.player);
 
     if (clusters.length === 0) {
       this.player.largestClusterBoundingBox = null;
@@ -137,19 +150,21 @@ export class PlayerExecution implements Execution {
 
     const largestClusterBox = calculateBoundingBox(this.mg, largestCluster);
     this.player.largestClusterBoundingBox = largestClusterBox;
-    const surroundedBy = this.surroundedBySamePlayer(
-      largestCluster,
-      largestClusterBox,
-    );
-    if (surroundedBy && !surroundedBy.isFriendly(this.player)) {
-      this.removeCluster(largestCluster);
+    if (!zombieClusterImmune) {
+      const surroundedBy = this.surroundedBySamePlayer(
+        largestCluster,
+        largestClusterBox,
+      );
+      if (surroundedBy && !surroundedBy.isFriendly(this.player)) {
+        this.removeCluster(largestCluster);
+      }
     }
 
     // Process remaining clusters
     for (let i = 0; i < clusters.length; i++) {
       if (i === largestIndex) continue;
       const cluster = clusters[i];
-      if (this.isSurrounded(cluster)) {
+      if (!zombieClusterImmune && this.isSurrounded(cluster)) {
         this.removeCluster(cluster);
       }
     }
@@ -268,7 +283,9 @@ export class PlayerExecution implements Execution {
     );
 
     if (this.player.numTilesOwned() === tiles.size) {
-      this.mg.conquerPlayer(capturing, this.player);
+      if (canAutoAnnexTarget(capturing, this.player)) {
+        this.mg.conquerPlayer(capturing, this.player);
+      }
     }
 
     for (const tile of tiles) {

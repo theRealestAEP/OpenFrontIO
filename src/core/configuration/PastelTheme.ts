@@ -3,6 +3,7 @@ import { PseudoRandom } from "../PseudoRandom";
 import { PlayerType, Team, TerrainType } from "../game/Game";
 import { GameMap, TileRef } from "../game/GameMap";
 import { PlayerView } from "../game/GameView";
+import { isZombiePlayer, ZOMBIE_TERRITORY_COLOR } from "../game/ZombieUtils";
 import { ColorAllocator } from "./ColorAllocator";
 import { botColors, fallbackColors, humanColors, nationColors } from "./Colors";
 import { Theme } from "./Config";
@@ -49,6 +50,9 @@ export class PastelTheme implements Theme {
   }
 
   territoryColor(player: PlayerView): Colord {
+    if (isZombiePlayer(player)) {
+      return colord(ZOMBIE_TERRITORY_COLOR);
+    }
     const team = player.team();
     if (team !== null) {
       return this.teamColorAllocator.assignTeamPlayerColor(team, player.id());
@@ -135,6 +139,9 @@ export class PastelTheme implements Theme {
   }
 
   textColor(player: PlayerView): string {
+    if (isZombiePlayer(player)) {
+      return "#F8E8E8";
+    }
     return player.type() === PlayerType.Human ? "#000000" : "#4D4D4D";
   }
 

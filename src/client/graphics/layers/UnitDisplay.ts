@@ -5,16 +5,18 @@ import { EventBus } from "../../../core/EventBus";
 import {
   BuildableUnit,
   BuildMenus,
+  CureState,
   Gold,
   PlayerBuildableUnitType,
   UnitType,
 } from "../../../core/game/Game";
 import { GameView } from "../../../core/game/GameView";
+import { ZOMBIE_CURE_RESEARCH_TICKS } from "../../../core/game/ZombieUtils";
 import {
   GhostStructureChangedEvent,
   ToggleStructureEvent,
 } from "../../InputHandler";
-import { renderNumber, translateText } from "../../Utils";
+import { renderDuration, renderNumber, translateText } from "../../Utils";
 import { UIState } from "../UIState";
 import { Layer } from "./Layer";
 const warshipIcon = assetUrl("images/BattleshipIconWhite.svg");
@@ -26,6 +28,7 @@ const missileSiloIcon = assetUrl("images/MissileSiloIconWhite.svg");
 const hydrogenBombIcon = assetUrl("images/MushroomCloudIconWhite.svg");
 const atomBombIcon = assetUrl("images/NukeIconWhite.svg");
 const portIcon = assetUrl("images/PortIcon.svg");
+const researchLabIcon = assetUrl("images/ResearchLabIcon.svg");
 const samLauncherIcon = assetUrl("images/SamLauncherIconWhite.svg");
 const defensePostIcon = assetUrl("images/ShieldIconWhite.svg");
 
@@ -39,6 +42,7 @@ export class UnitDisplay extends LitElement implements Layer {
   private _cities = 0;
   private _warships = 0;
   private _factories = 0;
+  private _researchLabs = 0;
   private _missileSilo = 0;
   private _port = 0;
   private _defensePost = 0;
@@ -108,6 +112,7 @@ export class UnitDisplay extends LitElement implements Layer {
     this._defensePost = player.totalUnitLevels(UnitType.DefensePost);
     this._samLauncher = player.totalUnitLevels(UnitType.SAMLauncher);
     this._factories = player.totalUnitLevels(UnitType.Factory);
+    this._researchLabs = player.totalUnitLevels(UnitType.ResearchLab);
     this._warships = player.totalUnitLevels(UnitType.Warship);
     this.requestUpdate();
   }
@@ -128,6 +133,7 @@ export class UnitDisplay extends LitElement implements Layer {
 
     return html`
       <div class="border-t border-white/10 p-0.5 w-full">
+        ${this.renderCureProgress(myPlayer)}
         <div
           class="grid grid-rows-1 auto-cols-max grid-flow-col gap-0.5 w-fit mx-auto"
         >
@@ -144,6 +150,13 @@ export class UnitDisplay extends LitElement implements Layer {
             UnitType.Factory,
             "factory",
             this.keybinds["buildFactory"]?.key ?? "2",
+          )}
+          ${this.renderUnitItem(
+            researchLabIcon,
+            this._researchLabs,
+            UnitType.ResearchLab,
+            "research_lab",
+            this.keybinds["buildResearchLab"]?.key ?? "L",
           )}
           ${this.renderUnitItem(
             portIcon,
@@ -206,6 +219,59 @@ export class UnitDisplay extends LitElement implements Layer {
     `;
   }
 
+  private renderCureProgress(myPlayer: ReturnType<GameView["myPlayer"]>) {
+    if (!myPlayer || myPlayer.cureState() === CureState.None) {
+      return null;
+    }
+
+    const cured = myPlayer.cureState() === CureState.Cured;
+    const remainingTicks =
+      myPlayer.cureProgressRemainingTicks() ?? ZOMBIE_CURE_RESEARCH_TICKS;
+    const progress = cured
+      ? 1
+      : 1 - remainingTicks / ZOMBIE_CURE_RESEARCH_TICKS;
+    const progressPercent = Math.max(0, Math.min(100, progress * 100));
+    const titleKey = cured
+      ? "zombie_survival.cure_ready"
+      : "zombie_survival.cure_progress";
+    const detailLabel = cured
+      ? translateText("zombie_survival.cure_ready")
+      : renderDuration(Math.ceil(remainingTicks / 10));
+
+    return html`
+      <div class="mx-auto mb-1 w-[min(22rem,100%)] px-1 text-white">
+        <div
+          class="mb-0.5 flex items-center justify-between text-[10px] uppercase tracking-[0.16em] text-white/75"
+        >
+          <span>${translateText(titleKey)}</span>
+          <span
+            class=${cured ? "text-emerald-300" : "text-cyan-200 tabular-nums"}
+            >${detailLabel}</span
+          >
+        </div>
+        <div
+          class="h-2 overflow-hidden rounded-full border border-white/15 bg-black/55"
+        >
+          <div
+            class="h-full rounded-full transition-[width] duration-200"
+            style=${`width: ${progressPercent}%; background: ${
+              cured
+                ? "linear-gradient(90deg, rgb(74, 222, 128), rgb(134, 239, 172))"
+                : "linear-gradient(90deg, rgb(34, 211, 238), rgb(56, 189, 248), rgb(110, 231, 183))"
+            };`}
+          ></div>
+        </div>
+      </div>
+    `;
+  }
+
+  private iconStyle(unitType: PlayerBuildableUnitType): string {
+    if (unitType !== UnitType.ResearchLab) {
+      return "";
+    }
+    return "filter: brightness(0) saturate(100%) invert(1) contrast(1.15) drop-shadow(0 1px 1px rgba(0,0,0,0.8));";
+  }
+
   private renderUnitItem(
     icon: string,
     number: number | null,
@@ -222,6 +288,10 @@ export class UnitDisplay extends LitElement implements Layer {
       .replace("Digit", "")
       .replace("Key", "")
       .toUpperCase();
+    const displayNameKey =
+      unitType === UnitType.ResearchLab
+        ? "unit_type.lab"
+        : "unit_type." + structureKey;
 
     return html`
       <div
@@ -241,9 +311,7 @@ export class UnitDisplay extends LitElement implements Layer {
                 class="absolute -top-[250%] left-1/2 -translate-x-1/2 text-gray-200 text-center w-max text-xs bg-gray-800/90 backdrop-blur-xs rounded-sm p-1 z-[100] shadow-lg pointer-events-none"
               >
                 <div class="font-bold text-sm mb-1">
-                  ${translateText(
-                    "unit_type." + structureKey,
-                  )}${` [${displayHotkey}]`}
+                  ${translateText(displayNameKey)}${` [${displayHotkey}]`}
                 </div>
                 <div class="p-2">
                   ${translateText("build_menu.desc." + structureKey)}
@@ -298,7 +366,12 @@ export class UnitDisplay extends LitElement implements Layer {
             ${displayHotkey}
           </div>`}
           <div class="flex items-center gap-0.5 pt-0.5">
-            <img src=${icon} alt=${structureKey} class="align-middle size-5" />
+            <img
+              src=${icon}
+              alt=${structureKey}
+              class="align-middle size-5 object-contain"
+              style=${this.iconStyle(unitType)}
+            />
             ${number !== null
               ? html`<span class="text-xs">${renderNumber(number)}</span>`
               : null}

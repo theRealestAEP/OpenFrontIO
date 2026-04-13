@@ -14,6 +14,9 @@ export class MissileSiloExecution implements Execution {
   }
 
   tick(ticks: number): void {
+    if (this.silo.isRuined()) {
+      return;
+    }
     if (this.silo.isUnderConstruction()) {
       return;
     }

@@ -9,6 +9,7 @@ import {
   GameMapType,
   GameMode,
   GameType,
+  SpecialRuleset,
   UnitType,
 } from "../core/game/Game";
 import { TeamCountConfig } from "../core/Schemas";
@@ -51,6 +52,7 @@ const DEFAULT_OPTIONS = {
   randomSpawn: false,
   useRandomMap: false,
   gameMode: GameMode.FFA,
+  specialRuleset: null as SpecialRuleset | null,
   teamCount: 2 as TeamCountConfig,
   goldMultiplier: false,
   goldMultiplierValue: undefined as number | undefined,
@@ -79,6 +81,8 @@ export class SinglePlayerModal extends BaseModal {
   @state() private randomSpawn: boolean = DEFAULT_OPTIONS.randomSpawn;
   @state() private useRandomMap: boolean = DEFAULT_OPTIONS.useRandomMap;
   @state() private gameMode: GameMode = DEFAULT_OPTIONS.gameMode;
+  @state() private specialRuleset: SpecialRuleset | null =
+    DEFAULT_OPTIONS.specialRuleset;
   @state() private teamCount: TeamCountConfig = DEFAULT_OPTIONS.teamCount;
   @state() private showAchievements: boolean = false;
   @state() private mapWins: Map<GameMapType, Set<Difficulty>> = new Map();
@@ -273,6 +277,8 @@ export class SinglePlayerModal extends BaseModal {
               },
               gameMode: {
                 selected: this.gameMode,
+                specialRuleset: this.specialRuleset ?? undefined,
+                showZombieOption: true,
               },
               teamCount: {
                 selected: this.teamCount,
@@ -331,6 +337,7 @@ export class SinglePlayerModal extends BaseModal {
             @random-map-selected=${this.handleConfigRandomMapSelected}
             @difficulty-selected=${this.handleConfigDifficultySelected}
             @game-mode-selected=${this.handleConfigGameModeSelected}
+            @special-ruleset-selected=${this.handleConfigSpecialRulesetSelected}
             @team-count-selected=${this.handleConfigTeamCountSelected}
             @bots-changed=${this.handleBotsChange}
             @nations-changed=${this.handleNationsChange}
@@ -387,6 +394,7 @@ export class SinglePlayerModal extends BaseModal {
       this.instantBuild !== DEFAULT_OPTIONS.instantBuild ||
       this.randomSpawn !== DEFAULT_OPTIONS.randomSpawn ||
       this.gameMode !== DEFAULT_OPTIONS.gameMode ||
+      this.specialRuleset !== DEFAULT_OPTIONS.specialRuleset ||
       this.goldMultiplier !== DEFAULT_OPTIONS.goldMultiplier ||
       this.startingGold !== DEFAULT_OPTIONS.startingGold ||
       this.disableAlliances !== DEFAULT_OPTIONS.disableAlliances ||
@@ -400,6 +408,7 @@ export class SinglePlayerModal extends BaseModal {
     this.selectedMap = DEFAULT_OPTIONS.selectedMap;
     this.selectedDifficulty = DEFAULT_OPTIONS.selectedDifficulty;
     this.gameMode = DEFAULT_OPTIONS.gameMode;
+    this.specialRuleset = DEFAULT_OPTIONS.specialRuleset;
     this.useRandomMap = DEFAULT_OPTIONS.useRandomMap;
     this.bots = DEFAULT_OPTIONS.bots;
     this.nations = 0;
@@ -458,6 +467,17 @@ export class SinglePlayerModal extends BaseModal {
   private handleConfigGameModeSelected = (e: Event) => {
     const customEvent = e as CustomEvent<{ mode: GameMode }>;
     this.handleGameModeSelection(customEvent.detail.mode);
+  };
+
+  private handleConfigSpecialRulesetSelected = (e: Event) => {
+    const customEvent = e as CustomEvent<{
+      specialRuleset: SpecialRuleset;
+      mode: GameMode;
+    }>;
+    this.handleSpecialRulesetSelection(
+      customEvent.detail.specialRuleset,
+      customEvent.detail.mode,
+    );
   };
 
   private handleConfigTeamCountSelected = (e: Event) => {
@@ -622,6 +642,15 @@ export class SinglePlayerModal extends BaseModal {
 
   private handleGameModeSelection(value: GameMode) {
     this.gameMode = value;
+    this.specialRuleset = null;
+  }
+
+  private handleSpecialRulesetSelection(
+    specialRuleset: SpecialRuleset,
+    mode: GameMode,
+  ) {
+    this.specialRuleset = specialRuleset;
+    this.gameMode = mode;
   }
 
   private handleTeamCountSelection(value: TeamCountConfig) {
@@ -683,6 +712,9 @@ export class SinglePlayerModal extends BaseModal {
                 : GameMapSize.Normal,
               gameType: GameType.Singleplayer,
               gameMode: this.gameMode,
+              ...(this.specialRuleset
+                ? { specialRuleset: this.specialRuleset }
+                : {}),
               playerTeams: this.teamCount,
               difficulty: this.selectedDifficulty,
               maxTimerValue: finalMaxTimerValue,

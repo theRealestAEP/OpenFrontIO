@@ -9,6 +9,7 @@ import {
   RankedType,
   Team,
 } from "../game/Game";
+import { isZombieRulesetGame } from "../game/ZombieUtils";
 
 export class WinEvent implements GameEvent {
   constructor(public readonly winner: Player) {}
@@ -34,6 +35,9 @@ export class WinCheckExecution implements Execution {
       return;
     }
     if (this.mg === null) throw new Error("Not initialized");
+    if (isZombieRulesetGame(this.mg)) {
+      return;
+    }
 
     if (this.mg.config().gameConfig().gameMode === GameMode.FFA) {
       this.checkWinnerFFA();

@@ -49,6 +49,7 @@ import { assignTeams } from "./TeamAssignment";
 import { TerraNulliusImpl } from "./TerraNulliusImpl";
 import { UnitGrid, UnitPredicate } from "./UnitGrid";
 import { WaterManager } from "./WaterManager";
+import { isZombiePlayerInfo, isZombieRulesetGame } from "./ZombieUtils";
 
 export function createGame(
   humans: PlayerInfo[],
@@ -72,8 +73,21 @@ export function createGame(
 
 export type CellString = string;
 
+const SLOW_ZOMBIE_EXECUTION_TRACE_MS = 20;
+const SLOW_ZOMBIE_TICK_TRACE_MS = 60;
+const FORCE_SLOW_ZOMBIE_LOG_MS = 250;
+const SLOW_ZOMBIE_LOG_COOLDOWN_TICKS = 50;
+const MAX_SLOW_ZOMBIE_OPERATIONS = 6;
+
+type SlowExecutionTrace = {
+  phase: "tick" | "init";
+  label: string;
+  durationMs: number;
+};
+
 export class GameImpl implements Game {
   private _ticks = 0;
+  private lastSlowZombieLogTick = -SLOW_ZOMBIE_LOG_COOLDOWN_TICKS;
 
   private unInitExecs: Execution[] = [];
 
@@ -151,7 +165,10 @@ export class GameImpl implements Game {
     }
 
     if (typeof numPlayerTeams !== "number") {
-      const players = this._humans.length + this._nations.length;
+      const players =
+        this._humans.length +
+        this._nations.filter((nation) => !isZombiePlayerInfo(nation.playerInfo))
+          .length;
       switch (numPlayerTeams) {
         case Duos:
           numPlayerTeams = Math.ceil(players / 2);
@@ -190,19 +207,26 @@ export class GameImpl implements Game {
       return;
     }
 
+    const zombieNationInfos = this._nations
+      .map((nation) => nation.playerInfo)
+      .filter((playerInfo) => isZombiePlayerInfo(playerInfo));
+    const regularNationInfos = this._nations
+      .map((nation) => nation.playerInfo)
+      .filter((playerInfo) => !isZombiePlayerInfo(playerInfo));
+
     if (this._config.playerTeams() === HumansVsNations) {
       this._humans.forEach((p) => this.addPlayer(p, ColoredTeams.Humans));
-      this._nations.forEach((n) =>
-        this.addPlayer(n.playerInfo, ColoredTeams.Nations),
+      regularNationInfos.forEach((playerInfo) =>
+        this.addPlayer(playerInfo, ColoredTeams.Nations),
+      );
+      zombieNationInfos.forEach((playerInfo) =>
+        this.addPlayer(playerInfo, null),
       );
       return;
     }
 
     // Team mode
-    const allPlayers = [
-      ...this._humans,
-      ...this._nations.map((n) => n.playerInfo),
-    ];
+    const allPlayers = [...this._humans, ...regularNationInfos];
     const playerToTeam = assignTeams(allPlayers, this.playerTeams);
     for (const [playerInfo, team] of playerToTeam.entries()) {
       if (team === "kicked") {
@@ -211,6 +235,7 @@ export class GameImpl implements Game {
       }
       this.addPlayer(playerInfo, team);
     }
+    zombieNationInfos.forEach((playerInfo) => this.addPlayer(playerInfo, null));
   }
 
   isOnEdgeOfMap(ref: TileRef): boolean {
@@ -410,19 +435,34 @@ export class GameImpl implements Game {
   executeNextTick(): GameUpdates {
     this.updates = createGameUpdatesMap();
     this.tileUpdatePairs.length = 0;
+    const traceZombieTicks = isZombieRulesetGame(this);
+    const slowExecutionTraces: SlowExecutionTrace[] = [];
+    const tickTraceStart = traceZombieTicks ? performance.now() : 0;
     this.execs.forEach((e) => {
       if (
         (!this.inSpawnPhase() || e.activeDuringSpawnPhase()) &&
         e.isActive()
       ) {
-        e.tick(this._ticks);
+        this.traceExecution(
+          traceZombieTicks,
+          slowExecutionTraces,
+          "tick",
+          e,
+          () => e.tick(this._ticks),
+        );
       }
     });
     const inited: Execution[] = [];
     const unInited: Execution[] = [];
     this.unInitExecs.forEach((e) => {
       if (!this.inSpawnPhase() || e.activeDuringSpawnPhase()) {
-        e.init(this, this._ticks);
+        this.traceExecution(
+          traceZombieTicks,
+          slowExecutionTraces,
+          "init",
+          e,
+          () => e.init(this, this._ticks),
+        );
         inited.push(e);
       } else {
         unInited.push(e);
@@ -449,8 +489,93 @@ export class GameImpl implements Game {
     for (const tile of waterChangedTiles) {
       this.recordTileUpdate(tile);
     }
+    if (traceZombieTicks) {
+      const totalTickMs = performance.now() - tickTraceStart;
+      const canLogSlowZombieTick =
+        this._ticks - this.lastSlowZombieLogTick >=
+          SLOW_ZOMBIE_LOG_COOLDOWN_TICKS ||
+        totalTickMs >= FORCE_SLOW_ZOMBIE_LOG_MS;
+      if (
+        (canLogSlowZombieTick && totalTickMs >= SLOW_ZOMBIE_TICK_TRACE_MS) ||
+        (canLogSlowZombieTick && slowExecutionTraces.length > 0)
+      ) {
+        this.lastSlowZombieLogTick = this._ticks;
+        this.logSlowZombieTick(totalTickMs, slowExecutionTraces);
+      }
+    }
     this._ticks++;
     return this.updates;
+  }
+
+  private traceExecution(
+    traceEnabled: boolean,
+    traces: SlowExecutionTrace[],
+    phase: "tick" | "init",
+    execution: Execution,
+    fn: () => void,
+  ): void {
+    if (!traceEnabled) {
+      fn();
+      return;
+    }
+
+    const start = performance.now();
+    fn();
+    const durationMs = performance.now() - start;
+    if (durationMs >= SLOW_ZOMBIE_EXECUTION_TRACE_MS) {
+      traces.push({
+        phase,
+        label: this.describeExecution(execution),
+        durationMs,
+      });
+    }
+  }
+
+  private describeExecution(execution: Execution): string {
+    const baseName = execution.constructor?.name ?? "AnonymousExecution";
+    const maybeOwnedExecution = execution as Execution & {
+      owner?: () => Player;
+      targetID?: () => PlayerID | null;
+    };
+
+    const details: string[] = [];
+    if (typeof maybeOwnedExecution.owner === "function") {
+      try {
+        details.push(`owner=${maybeOwnedExecution.owner().displayName()}`);
+      } catch {}
+    }
+    if (typeof maybeOwnedExecution.targetID === "function") {
+      try {
+        const targetID = maybeOwnedExecution.targetID();
+        if (targetID !== null) {
+          details.push(`target=${targetID}`);
+        }
+      } catch {}
+    }
+
+    return details.length > 0 ? `${baseName}[${details.join(", ")}]` : baseName;
+  }
+
+  private logSlowZombieTick(
+    totalTickMs: number,
+    traces: SlowExecutionTrace[],
+  ): void {
+    const topTraces = [...traces]
+      .sort((a, b) => b.durationMs - a.durationMs)
+      .slice(0, MAX_SLOW_ZOMBIE_OPERATIONS)
+      .map(
+        (trace) =>
+          `${trace.durationMs.toFixed(1)}ms ${trace.phase}:${trace.label}`,
+      )
+      .join("; ");
+
+    console.warn(
+      `[GameImpl] Slow zombie tick ${this._ticks}: total=${totalTickMs.toFixed(
+        1,
+      )}ms, activeExecs=${this.execs.length}, pendingInit=${
+        this.unInitExecs.length
+      }${topTraces ? `, slowest=${topTraces}` : ""}`,
+    );
   }
 
   private recordTileUpdate(tile: TileRef): void {
@@ -587,6 +712,9 @@ export class GameImpl implements Game {
 
   private maybeAssignTeam(player: PlayerInfo): Team | null {
     if (this._config.gameConfig().gameMode !== GameMode.Team) {
+      return null;
+    }
+    if (isZombiePlayerInfo(player)) {
       return null;
     }
     if (player.playerType === PlayerType.Bot) {

@@ -19,6 +19,7 @@ export const STRUCTURE_SHAPES: Partial<Record<UnitType, ShapeType>> = {
   [UnitType.City]: "circle",
   [UnitType.Port]: "pentagon",
   [UnitType.Factory]: "circle",
+  [UnitType.ResearchLab]: "circle",
   [UnitType.DefensePost]: "octagon",
   [UnitType.SAMLauncher]: "square",
   [UnitType.MissileSilo]: "triangle",
@@ -416,7 +417,13 @@ export class SpriteFactory {
 
     const structureInfo = this.structuresInfos.get(structureType);
 
-    if (structureInfo?.image && renderIcon) {
+    if (structureType === UnitType.ResearchLab && renderIcon) {
+      this.drawResearchLabGlyph(
+        context,
+        iconSize,
+        owner.structureColors().dark.toRgbString(),
+      );
+    } else if (structureInfo?.image && renderIcon) {
       const SHAPE_OFFSETS = {
         triangle: [6, 11],
         square: [5, 5],
@@ -452,6 +459,64 @@ export class SpriteFactory {
     }
 
     return PIXI.Texture.from(structureCanvas);
+  }
+
+  private drawResearchLabGlyph(
+    context: CanvasRenderingContext2D,
+    iconSize: number,
+    color: string,
+  ) {
+    const cx = iconSize / 2;
+    const neckHalf = iconSize * 0.08;
+    const topY = iconSize * 0.2;
+    const shoulderY = iconSize * 0.38;
+    const bottomY = iconSize * 0.72;
+    const baseHalf = iconSize * 0.26;
+
+    context.save();
+    context.fillStyle = color;
+
+    // Flask silhouette.
+    context.beginPath();
+    context.moveTo(cx - neckHalf, topY);
+    context.lineTo(cx + neckHalf, topY);
+    context.lineTo(cx + neckHalf * 1.3, shoulderY);
+    context.lineTo(cx + baseHalf, bottomY);
+    context.lineTo(cx - baseHalf, bottomY);
+    context.lineTo(cx - neckHalf * 1.3, shoulderY);
+    context.closePath();
+    context.fill();
+
+    // Cut out a tilted "liquid" line so the icon reads better at small size.
+    context.globalCompositeOperation = "destination-out";
+    context.beginPath();
+    context.moveTo(cx - baseHalf * 0.7, iconSize * 0.58);
+    context.lineTo(cx + baseHalf * 0.5, iconSize * 0.53);
+    context.lineTo(cx + baseHalf * 0.35, bottomY - iconSize * 0.08);
+    context.lineTo(cx - baseHalf * 0.82, bottomY - iconSize * 0.08);
+    context.closePath();
+    context.fill();
+
+    context.restore();
+    context.fillStyle = color;
+
+    // Small bubbles to sell the "lab" look.
+    context.beginPath();
+    context.arc(
+      cx + iconSize * 0.18,
+      iconSize * 0.28,
+      iconSize * 0.04,
+      0,
+      Math.PI * 2,
+    );
+    context.arc(
+      cx + iconSize * 0.28,
+      iconSize * 0.2,
+      iconSize * 0.025,
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
   }
 
   public createRange(

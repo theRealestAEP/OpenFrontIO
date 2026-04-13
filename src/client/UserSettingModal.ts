@@ -19,6 +19,7 @@ const DefaultKeybinds: Record<string, string> = {
   coordinateGrid: "KeyM",
   buildCity: "Digit1",
   buildFactory: "Digit2",
+  buildResearchLab: "KeyL",
   buildPort: "Digit3",
   buildDefensePost: "Digit4",
   buildMissileSilo: "Digit5",
@@ -482,6 +483,16 @@ export class UserSettingModal extends BaseModal {
         defaultKey="Digit2"
         .value=${this.getKeyValue("buildFactory")}
         .display=${this.getKeyChar("buildFactory")}
+        @change=${this.handleKeybindChange}
+      ></setting-keybind>
+
+      <setting-keybind
+        action="buildResearchLab"
+        label=${translateText("user_setting.build_research_lab")}
+        description=${translateText("user_setting.build_research_lab_desc")}
+        defaultKey="KeyL"
+        .value=${this.getKeyValue("buildResearchLab")}
+        .display=${this.getKeyChar("buildResearchLab")}
         @change=${this.handleKeybindChange}
       ></setting-keybind>
 

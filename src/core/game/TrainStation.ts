@@ -71,6 +71,9 @@ export class TrainStation {
   }
 
   tradeAvailable(otherPlayer: Player): boolean {
+    if (this.unit.isRuined()) {
+      return false;
+    }
     const player = this.unit.owner();
     return otherPlayer === player || player.canTrade(otherPlayer);
   }
@@ -122,7 +125,7 @@ export class TrainStation {
   }
 
   isActive(): boolean {
-    return this.unit.isActive();
+    return this.unit.isActive() && !this.unit.isRuined();
   }
 
   getRailroads(): Set<Railroad> {

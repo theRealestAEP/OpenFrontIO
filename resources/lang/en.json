@@ -488,7 +488,10 @@
   },
   "game_mode": {
     "ffa": "Free for All",
-    "teams": "Teams"
+    "teams": "Teams",
+    "zombie_survival": "Zombie Survival",
+    "zombie_ffa": "Zombie FFA",
+    "zombie_teams": "Zombie Teams"
   },
   "mode_selector": {
     "teams_title": "Teams",
@@ -534,7 +537,9 @@
     "atom_bomb": "Atom Bomb",
     "hydrogen_bomb": "Hydrogen Bomb",
     "mirv": "MIRV",
-    "factory": "Factory"
+    "factory": "Factory",
+    "lab": "Lab",
+    "research_lab": "Research Lab"
   },
   "user_setting": {
     "title": "Settings",
@@ -583,6 +588,8 @@
     "build_city_desc": "Build a City under your cursor.",
     "build_factory": "Build Factory",
     "build_factory_desc": "Build a Factory under your cursor.",
+    "build_research_lab": "Build Research Lab",
+    "build_research_lab_desc": "Build a Research Lab under your cursor.",
     "build_defense_post": "Build Defense Post",
     "build_defense_post_desc": "Build a Defense Post under your cursor.",
     "build_port": "Build Port",
@@ -751,9 +758,14 @@
       "port": "Sends trade ships to generate gold",
       "defense_post": "Increases defenses of nearby borders",
       "city": "Increases max population",
-      "factory": "Creates railroads and spawns trains"
+      "factory": "Creates railroads and spawns trains",
+      "research_lab": "Researches a cure against the zombie plague"
     },
     "not_enough_money": "Not enough money"
+  },
+  "zombie_survival": {
+    "cure_progress": "Cure Research",
+    "cure_ready": "Cure Ready"
   },
   "win_modal": {
     "support_openfront": "Support OpenFront!",

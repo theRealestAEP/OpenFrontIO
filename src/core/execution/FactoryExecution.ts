@@ -13,6 +13,13 @@ export class FactoryExecution implements Execution {
   }
 
   tick(ticks: number): void {
+    if (this.factory.isRuined()) {
+      if (this.factory.hasTrainStation()) {
+        this.game.railNetwork().removeStation(this.factory);
+      }
+      this.active = false;
+      return;
+    }
     if (!this.stationCreated) {
       this.createStation();
       this.stationCreated = true;

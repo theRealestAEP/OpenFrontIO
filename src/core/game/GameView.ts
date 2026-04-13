@@ -9,6 +9,7 @@ import { WorkerClient } from "../worker/WorkerClient";
 import {
   BuildableUnit,
   Cell,
+  CureState,
   EmojiMessage,
   GameUpdates,
   Gold,
@@ -18,6 +19,7 @@ import {
   PlayerBuildableUnitType,
   PlayerID,
   PlayerProfile,
+  PlayerSpecialRole,
   PlayerType,
   Team,
   TerrainType,
@@ -141,6 +143,9 @@ export class UnitView {
   }
   isUnderConstruction(): boolean {
     return this.data.underConstruction === true;
+  }
+  isRuined(): boolean {
+    return this.data.ruined === true;
   }
   targetUnitId(): number | undefined {
     return this.data.targetUnitId;
@@ -488,6 +493,9 @@ export class PlayerView {
   type(): PlayerType {
     return this.data.playerType;
   }
+  specialRole(): PlayerSpecialRole | null {
+    return this.data.specialRole ?? null;
+  }
   isAlive(): boolean {
     return this.data.isAlive;
   }
@@ -513,6 +521,14 @@ export class PlayerView {
 
   troops(): number {
     return this.data.troops;
+  }
+
+  cureState(): CureState {
+    return this.data.cureState;
+  }
+
+  cureProgressRemainingTicks(): Tick | null {
+    return this.data.cureProgressRemainingTicks ?? null;
   }
 
   totalUnitLevels(type: UnitType): number {

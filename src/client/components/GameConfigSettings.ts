@@ -14,6 +14,7 @@ import {
   GameMode,
   HumansVsNations,
   Quads,
+  SpecialRuleset,
   Trios,
   UnitType,
 } from "../../core/game/Game";
@@ -100,6 +101,7 @@ const unitOptions: { type: UnitType; translationKey: string }[] = [
   { type: UnitType.HydrogenBomb, translationKey: "unit_type.hydrogen_bomb" },
   { type: UnitType.MIRV, translationKey: "unit_type.mirv" },
   { type: UnitType.Factory, translationKey: "unit_type.factory" },
+  { type: UnitType.ResearchLab, translationKey: "unit_type.research_lab" },
 ];
 
 const MAP_ICON = svg`<path
@@ -175,6 +177,8 @@ export interface GameConfigSettingsData {
   };
   gameMode: {
     selected: GameMode;
+    showZombieOption?: boolean;
+    specialRuleset?: SpecialRuleset;
   };
   teamCount: {
     selected: TeamCountConfig;
@@ -237,6 +241,13 @@ export class GameConfigSettings extends LitElement {
     this.emit("game-mode-selected", { mode });
   };
 
+  private handleSpecialRulesetSelect = (
+    specialRuleset: SpecialRuleset,
+    mode: GameMode,
+  ) => {
+    this.emit("special-ruleset-selected", { specialRuleset, mode });
+  };
+
   private handleTeamCountSelect = (count: TeamCountConfig) => {
     this.emit("team-count-selected", { count });
   };
@@ -293,6 +304,45 @@ export class GameConfigSettings extends LitElement {
   render() {
     if (!this.settings) return nothing;
     const settings = this.settings;
+    const showZombieOption = settings.gameMode.showZombieOption ?? false;
+    const isZombieMode =
+      settings.gameMode.specialRuleset === SpecialRuleset.ZombieSurvival;
+    const modeCards = [
+      {
+        active: !isZombieMode && settings.gameMode.selected === GameMode.FFA,
+        label: translateText("game_mode.ffa"),
+        onClick: () => this.handleGameModeSelect(GameMode.FFA),
+      },
+      {
+        active: !isZombieMode && settings.gameMode.selected === GameMode.Team,
+        label: translateText("game_mode.teams"),
+        onClick: () => this.handleGameModeSelect(GameMode.Team),
+      },
+      ...(showZombieOption
+        ? [
+            {
+              active:
+                isZombieMode && settings.gameMode.selected === GameMode.FFA,
+              label: translateText("game_mode.zombie_ffa"),
+              onClick: () =>
+                this.handleSpecialRulesetSelect(
+                  SpecialRuleset.ZombieSurvival,
+                  GameMode.FFA,
+                ),
+            },
+            {
+              active:
+                isZombieMode && settings.gameMode.selected === GameMode.Team,
+              label: translateText("game_mode.zombie_teams"),
+              onClick: () =>
+                this.handleSpecialRulesetSelect(
+                  SpecialRuleset.ZombieSurvival,
+                  GameMode.Team,
+                ),
+            },
+          ]
+        : []),
+    ];
 
     return html`
       <div class=${this.sectionGapClass}>
@@ -357,20 +407,21 @@ export class GameConfigSettings extends LitElement {
           "bg-purple-500/20",
           "host_modal.mode",
           html`
-            <div class="grid grid-cols-2 gap-4">
-              ${[GameMode.FFA, GameMode.Team].map((mode) => {
-                const isSelected = settings.gameMode.selected === mode;
+            <div
+              class="${showZombieOption
+                ? "grid grid-cols-2 lg:grid-cols-4 gap-4"
+                : "grid grid-cols-2 gap-4"}"
+            >
+              ${modeCards.map((modeCard) => {
                 return html`
                   <button
-                    class="${cardClass(isSelected, "py-6 text-center")}"
-                    @click=${() => this.handleGameModeSelect(mode)}
+                    class="${cardClass(modeCard.active, "py-6 text-center")}"
+                    @click=${modeCard.onClick}
                   >
                     <span
                       class="text-sm font-bold text-white uppercase tracking-widest"
                     >
-                      ${mode === GameMode.FFA
-                        ? translateText("game_mode.ffa")
-                        : translateText("game_mode.teams")}
+                      ${modeCard.label}
                     </span>
                   </button>
                 `;

@@ -15,8 +15,11 @@ const shieldIcon = assetUrl("images/buildings/fortAlt3.png");
 const anchorIcon = assetUrl("images/buildings/port1.png");
 const missileSiloIcon = assetUrl("images/buildings/silo1.png");
 const SAMMissileIcon = assetUrl("images/buildings/silo4.png");
+const researchLabIcon = assetUrl("images/buildings/researchFacility.png");
 
 const underConstructionColor = colord("rgb(150,150,150)");
+const ruinedStructureColor = colord("rgb(92,58,58)");
+const researchLabGlowColor = "rgba(103, 232, 249, 0.9)";
 
 // Base radius values and scaling factor for unit borders and territories
 const BASE_BORDER_RADIUS = 16.5;
@@ -67,6 +70,11 @@ export class StructureLayer implements Layer {
     },
     [UnitType.SAMLauncher]: {
       icon: SAMMissileIcon,
+      borderRadius: BASE_BORDER_RADIUS * RADIUS_SCALE_FACTOR,
+      territoryRadius: BASE_TERRITORY_RADIUS * RADIUS_SCALE_FACTOR,
+    },
+    [UnitType.ResearchLab]: {
+      icon: researchLabIcon,
       borderRadius: BASE_BORDER_RADIUS * RADIUS_SCALE_FACTOR,
       territoryRadius: BASE_TERRITORY_RADIUS * RADIUS_SCALE_FACTOR,
     },
@@ -206,9 +214,11 @@ export class StructureLayer implements Layer {
     )) {
       this.paintCell(
         new Cell(this.game.x(tile), this.game.y(tile)),
-        unit.isUnderConstruction()
-          ? underConstructionColor
-          : unit.owner().territoryColor(),
+        unit.isRuined()
+          ? ruinedStructureColor
+          : unit.isUnderConstruction()
+            ? underConstructionColor
+            : unit.owner().territoryColor(),
         130,
       );
     }
@@ -266,6 +276,8 @@ export class StructureLayer implements Layer {
     if (unit.isUnderConstruction()) {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       color = underConstructionColor;
+    } else if (unit.isRuined()) {
+      color = ruinedStructureColor;
     }
 
     // Make temp canvas at the final render size (2x scale)
@@ -277,11 +289,29 @@ export class StructureLayer implements Layer {
     this.tempContext.imageSmoothingQuality = "high";
 
     // Draw the image at final size with high quality scaling
+    this.tempContext.filter = unit.isRuined()
+      ? "grayscale(1) brightness(0.7)"
+      : "none";
     this.tempContext.drawImage(image, 0, 0, width * 2, height * 2);
 
     // Restore the alpha channel
     this.tempContext.globalCompositeOperation = "destination-in";
     this.tempContext.drawImage(image, 0, 0, width * 2, height * 2);
+    this.tempContext.filter = "none";
+    this.tempContext.globalCompositeOperation = "source-over";
+
+    if (
+      unit.type() === UnitType.ResearchLab &&
+      !unit.isUnderConstruction() &&
+      !unit.isRuined()
+    ) {
+      this.context.save();
+      this.context.shadowColor = researchLabGlowColor;
+      this.context.shadowBlur = 10;
+      this.context.drawImage(this.tempCanvas, startX * 2, startY * 2);
+      this.context.restore();
+      return;
+    }
 
     // Draw the final result to the main canvas
     this.context.drawImage(this.tempCanvas, startX * 2, startY * 2);

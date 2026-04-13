@@ -3,6 +3,7 @@ import { getGameLogicConfig } from "./configuration/ConfigLoader";
 import { Executor } from "./execution/ExecutionManager";
 import { RecomputeRailClusterExecution } from "./execution/RecomputeRailClusterExecution";
 import { WinCheckExecution } from "./execution/WinCheckExecution";
+import { ZombieSurvivalExecution } from "./execution/ZombieSurvivalExecution";
 import {
   AllPlayers,
   BuildableUnit,
@@ -25,6 +26,7 @@ import { GameMapLoader } from "./game/GameMapLoader";
 import { ErrorUpdate, GameUpdateViewData } from "./game/GameUpdates";
 import { createNationsForGame } from "./game/NationCreation";
 import { loadTerrainMap as loadGameMap } from "./game/TerrainMapLoader";
+import { isZombieRulesetConfig } from "./game/ZombieUtils";
 import { PseudoRandom } from "./PseudoRandom";
 import { ClientID, GameStartInfo, Turn } from "./Schemas";
 import { simpleHash } from "./Util";
@@ -103,6 +105,9 @@ export class GameRunner {
     }
     if (this.game.config().spawnNations()) {
       this.game.addExecution(...this.execManager.nationExecutions());
+    }
+    if (isZombieRulesetConfig(this.game.config().gameConfig())) {
+      this.game.addExecution(new ZombieSurvivalExecution());
     }
     this.game.addExecution(new WinCheckExecution());
     if (!this.game.config().isUnitDisabled(UnitType.Factory)) {

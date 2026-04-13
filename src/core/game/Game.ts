@@ -249,6 +249,25 @@ export enum RankedType {
   OneVOne = "1v1",
 }
 
+export const SpecialRuleset = {
+  ZombieSurvival: "zombie_survival",
+} as const;
+export type SpecialRuleset =
+  (typeof SpecialRuleset)[keyof typeof SpecialRuleset];
+
+export const PlayerSpecialRole = {
+  Zombie: "zombie",
+} as const;
+export type PlayerSpecialRole =
+  (typeof PlayerSpecialRole)[keyof typeof PlayerSpecialRole];
+
+export const CureState = {
+  None: "none",
+  Researching: "researching",
+  Cured: "cured",
+} as const;
+export type CureState = (typeof CureState)[keyof typeof CureState];
+
 export const isGameMode = (value: unknown): value is GameMode =>
   isEnumValue(GameMode, value);
 
@@ -306,6 +325,7 @@ export enum UnitType {
   MIRVWarhead = "MIRV Warhead",
   Train = "Train",
   Factory = "Factory",
+  ResearchLab = "Research Lab",
 }
 
 export enum TrainType {
@@ -335,6 +355,7 @@ export const Structures = unitTypeGroup([
   UnitType.MissileSilo,
   UnitType.Port,
   UnitType.Factory,
+  UnitType.ResearchLab,
 ] as const);
 
 export const BuildMenus = unitTypeGroup([
@@ -395,6 +416,8 @@ export interface UnitParamsMap {
   };
 
   [UnitType.Factory]: Record<string, never>;
+
+  [UnitType.ResearchLab]: Record<string, never>;
 
   [UnitType.MissileSilo]: Record<string, never>;
 
@@ -539,6 +562,7 @@ export class PlayerInfo {
     public readonly id: PlayerID,
     public readonly isLobbyCreator: boolean = false,
     public readonly clanTag: string | null = null,
+    public readonly specialRole: PlayerSpecialRole | null = null,
   ) {
     this.displayName = formatPlayerDisplayName(this.name, this.clanTag);
   }
@@ -625,6 +649,8 @@ export interface Unit {
   // Construction phase on structures
   isUnderConstruction(): boolean;
   setUnderConstruction(underConstruction: boolean): void;
+  isRuined(): boolean;
+  setRuined(ruined: boolean): void;
 
   // Upgradable Structures
   level(): number;
@@ -658,6 +684,7 @@ export interface Player {
   clientID(): ClientID | null;
   id(): PlayerID;
   type(): PlayerType;
+  specialRole(): PlayerSpecialRole | null;
   isPlayer(): this is Player;
   toString(): string;
   isLobbyCreator(): boolean;
@@ -691,6 +718,10 @@ export interface Player {
   setTroops(troops: number): void;
   addTroops(troops: number): void;
   removeTroops(troops: number): number;
+  cureState(): CureState;
+  setCureState(state: CureState): void;
+  cureProgressRemainingTicks(): Tick | null;
+  setCureProgressRemainingTicks(ticks: Tick | null): void;
 
   // Units
   units(...types: UnitType[]): Unit[];

@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { NationStructureBehavior } from "../src/core/execution/nation/NationStructureBehavior";
-import { Difficulty, PlayerType } from "../src/core/game/Game";
+import { Difficulty, PlayerType, UnitType } from "../src/core/game/Game";
 import { Cluster } from "../src/core/game/TrainStation";
 import { PseudoRandom } from "../src/core/PseudoRandom";
 
@@ -308,6 +308,48 @@ describe("NationStructureBehavior.buildReachableStations", () => {
     expect(result).toHaveLength(2);
     const tiles = result.map((r: any) => r.tile).sort();
     expect(tiles).toEqual([100, 200]);
+  });
+});
+
+describe("NationStructureBehavior.researchLabValue", () => {
+  it("scores research labs without throwing and prefers interior tiles", () => {
+    const strategicUnits = new Map<UnitType, any[]>([
+      [UnitType.City, [makeUnit(1)]],
+      [UnitType.Factory, [makeUnit(8)]],
+      [UnitType.MissileSilo, [makeUnit(12)]],
+      [UnitType.ResearchLab, []],
+    ]);
+
+    const game = {
+      magnitude: vi.fn(() => 0),
+      manhattanDist: vi.fn((a: number, b: number) => Math.abs(a - b)),
+      x: vi.fn((tile: number) => tile),
+      y: vi.fn(() => 0),
+      config: () => ({
+        trainGold: () => 0n,
+        nukeMagnitudes: () => ({ inner: 2, outer: 6 }),
+      }),
+    };
+    const player = {
+      borderTiles: vi.fn(() => new Set([0, 14])),
+      units: vi.fn((...types: UnitType[]) =>
+        types.flatMap((type) => strategicUnits.get(type) ?? []),
+      ),
+    };
+
+    const behavior = new NationStructureBehavior(
+      new PseudoRandom(0),
+      game as any,
+      player as any,
+    );
+
+    const valueFn = (behavior as any).structureSpawnTileValue(
+      UnitType.ResearchLab,
+    );
+
+    expect(typeof valueFn).toBe("function");
+    expect(() => valueFn(7)).not.toThrow();
+    expect(valueFn(7)).toBeGreaterThan(valueFn(1));
   });
 });
 

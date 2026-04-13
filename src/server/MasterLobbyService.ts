@@ -87,6 +87,7 @@ export class MasterLobbyService {
       ffa: [],
       team: [],
       special: [],
+      zombie: [],
     };
 
     for (const lobby of lobbies) {

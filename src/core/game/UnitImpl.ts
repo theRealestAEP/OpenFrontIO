@@ -38,6 +38,7 @@ export class UnitImpl implements Unit {
   private _targetable: boolean = true;
   private _loaded: boolean | undefined;
   private _trainType: TrainType | undefined;
+  private _ruined = false;
   // Nuke only
   private _trajectoryIndex: number = 0;
   private _trajectory: TrajectoryTile[];
@@ -77,6 +78,7 @@ export class UnitImpl implements Unit {
       case UnitType.SAMLauncher:
       case UnitType.City:
       case UnitType.Factory:
+      case UnitType.ResearchLab:
         this.mg.stats().unitBuild(_owner, this._type);
     }
   }
@@ -135,6 +137,7 @@ export class UnitImpl implements Unit {
       lastPos: this._lastTile,
       health: this.hasHealth() ? Number(this._health) : undefined,
       underConstruction: this._underConstruction,
+      ruined: this._ruined,
       targetUnitId: this._targetUnit?.id() ?? undefined,
       targetTile: this.targetTile() ?? undefined,
       missileTimerQueue: this._missileTimerQueue,
@@ -195,6 +198,7 @@ export class UnitImpl implements Unit {
       case UnitType.SAMLauncher:
       case UnitType.City:
       case UnitType.Factory:
+      case UnitType.ResearchLab:
         this.mg.stats().unitCapture(newOwner, this._type);
         this.mg.stats().unitLose(this._owner, this._type);
         break;
@@ -290,6 +294,7 @@ export class UnitImpl implements Unit {
         case UnitType.SAMLauncher:
         case UnitType.Warship:
         case UnitType.Factory:
+        case UnitType.ResearchLab:
           this.mg.stats().unitDestroy(destroyer, this._type);
           this.mg.stats().unitLose(this.owner(), this._type);
           break;
@@ -348,6 +353,17 @@ export class UnitImpl implements Unit {
   setUnderConstruction(underConstruction: boolean): void {
     if (this._underConstruction !== underConstruction) {
       this._underConstruction = underConstruction;
+      this.mg.addUpdate(this.toUpdate());
+    }
+  }
+
+  isRuined(): boolean {
+    return this._ruined;
+  }
+
+  setRuined(ruined: boolean): void {
+    if (this._ruined !== ruined) {
+      this._ruined = ruined;
       this.mg.addUpdate(this.toUpdate());
     }
   }

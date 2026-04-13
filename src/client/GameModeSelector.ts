@@ -111,6 +111,7 @@ export class GameModeSelector extends LitElement {
     const ffa = this.lobbies?.games?.["ffa"]?.[0];
     const teams = this.lobbies?.games?.["team"]?.[0];
     const special = this.lobbies?.games?.["special"]?.[0];
+    const zombie = this.lobbies?.games?.["zombie"]?.[0];
 
     return html`
       <div class="flex flex-col gap-4 w-full px-4 sm:px-0 mx-auto pb-4 sm:pb-0">
@@ -144,43 +145,28 @@ export class GameModeSelector extends LitElement {
         </div>
         <!-- Game cards grid -->
         <div
-          class="grid grid-cols-1 sm:grid-cols-[2fr_1fr] gap-4 sm:h-[min(24rem,40vh)]"
+          class="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:h-[min(28rem,48vh)]"
         >
-          <!-- Left col: main card (desktop only) -->
           ${ffa
-            ? html`<div class="hidden sm:block">
+            ? html`<div class="min-h-0">
                 ${this.renderLobbyCard(ffa, this.getLobbyTitle(ffa))}
               </div>`
             : nothing}
-
-          <!-- Right col: special + teams (desktop only) -->
-          <div class="hidden sm:flex sm:flex-col sm:gap-4">
-            ${special
-              ? html`<div class="flex-1 min-h-0">
-                  ${this.renderSpecialLobbyCard(special)}
-                </div>`
-              : nothing}
-            ${teams
-              ? html`<div class="flex-1 min-h-0">
-                  ${this.renderLobbyCard(teams, this.getLobbyTitle(teams))}
-                </div>`
-              : nothing}
-          </div>
-
-          <!-- Mobile: special, ffa, teams inline -->
-          <div class="sm:hidden">
-            ${special ? this.renderSpecialLobbyCard(special) : nothing}
-          </div>
-          <div class="sm:hidden">
-            ${ffa
-              ? this.renderLobbyCard(ffa, this.getLobbyTitle(ffa))
-              : nothing}
-          </div>
-          <div class="sm:hidden">
-            ${teams
-              ? this.renderLobbyCard(teams, this.getLobbyTitle(teams))
-              : nothing}
-          </div>
+          ${teams
+            ? html`<div class="min-h-0">
+                ${this.renderLobbyCard(teams, this.getLobbyTitle(teams))}
+              </div>`
+            : nothing}
+          ${special
+            ? html`<div class="min-h-0">
+                ${this.renderSpecialLobbyCard(special)}
+              </div>`
+            : nothing}
+          ${zombie
+            ? html`<div class="min-h-0">
+                ${this.renderLobbyCard(zombie, this.getLobbyTitle(zombie))}
+              </div>`
+            : nothing}
         </div>
 
         <!-- Solo: full width, desktop only -->
@@ -388,6 +374,15 @@ export class GameModeSelector extends LitElement {
   }
 
   private getLobbyTitle(lobby: PublicGameInfo): string {
+    const config = lobby.gameConfig!;
+    const baseTitle = this.getBaseLobbyTitle(lobby);
+    if (config.specialRuleset === "zombie_survival") {
+      return `${translateText("game_mode.zombie_survival")} • ${baseTitle}`;
+    }
+    return baseTitle;
+  }
+
+  private getBaseLobbyTitle(lobby: PublicGameInfo): string {
     const config = lobby.gameConfig!;
     if (config.gameMode === GameMode.FFA) {
       return translateText("game_mode.ffa");

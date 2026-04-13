@@ -44,6 +44,10 @@ export class DefensePostExecution implements Execution {
       return;
     }
 
+    if (this.post.isRuined()) {
+      return;
+    }
+
     // Do nothing while the structure is under construction
     if (this.post.isUnderConstruction()) {
       return;

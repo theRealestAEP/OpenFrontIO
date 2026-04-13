@@ -1,11 +1,13 @@
 import { AllPlayersStats, ClientID, Winner } from "../Schemas";
 import {
+  CureState,
   EmojiMessage,
   GameUpdates,
   Gold,
   MessageType,
   NameViewData,
   PlayerID,
+  PlayerSpecialRole,
   PlayerType,
   Team,
   Tick,
@@ -144,6 +146,7 @@ export interface UnitUpdate {
   targetTile?: TileRef; // Only for nukes
   health?: number;
   underConstruction?: boolean;
+  ruined?: boolean;
   missileTimerQueue: number[];
   level: number;
   hasTrainStation: boolean;
@@ -169,11 +172,14 @@ export interface PlayerUpdate {
   team?: Team;
   smallID: number;
   playerType: PlayerType;
+  specialRole?: PlayerSpecialRole;
   isAlive: boolean;
   isDisconnected: boolean;
   tilesOwned: number;
   gold: Gold;
   troops: number;
+  cureState: CureState;
+  cureProgressRemainingTicks?: Tick;
   allies: number[];
   embargoes: Set<PlayerID>;
   isTraitor: boolean;

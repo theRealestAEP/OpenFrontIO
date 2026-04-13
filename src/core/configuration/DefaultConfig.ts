@@ -18,6 +18,18 @@ import {
 import { TileRef } from "../game/GameMap";
 import { PlayerView } from "../game/GameView";
 import { UserSettings } from "../game/UserSettings";
+import {
+  isCuredPlayer,
+  isZombiePlayer,
+  ZOMBIE_BOAT_CAP,
+  ZOMBIE_INFESTATION_CAP_BONUS,
+  ZOMBIE_INFESTATION_TILES_PER_CAP_BONUS,
+  ZOMBIE_MAX_TROOPS_MULTIPLIER,
+  ZOMBIE_TROOP_REGEN_MULTIPLIER,
+  ZOMBIE_UNCURED_ATTACKER_LOSS_MULTIPLIER,
+  ZOMBIE_UNCURED_DEFENDER_LOSS_MULTIPLIER,
+  ZOMBIE_UNCURED_DEFENSE_FLOOR_PER_TILE,
+} from "../game/ZombieUtils";
 import { GameConfig, GameID, TeamCountConfig } from "../Schemas";
 import { NukeType } from "../StatsSchemas";
 import { assertNever, sigmoid, simpleHash, toInt, within } from "../Util";
@@ -465,6 +477,15 @@ export class DefaultConfig implements Config {
           upgradable: true,
         };
         break;
+      case UnitType.ResearchLab:
+        info = {
+          cost: () =>
+            this._gameConfig.gameMode === GameMode.FFA
+              ? 5_000_000n
+              : 25_000_000n,
+          constructionDuration: this.instantBuild() ? 0 : 2 * 10,
+        };
+        break;
       case UnitType.Train:
         info = {
           cost: () => 0n,
@@ -546,9 +567,12 @@ export class DefaultConfig implements Config {
     }
     return 80;
   }
-  boatMaxNumber(): number {
+  boatMaxNumber(player?: Player | PlayerView): number {
     if (this.isUnitDisabled(UnitType.TransportShip)) {
       return 0;
+    }
+    if (player && isZombiePlayer(player)) {
+      return ZOMBIE_BOAT_CAP;
     }
     return 3;
   }
@@ -581,6 +605,51 @@ export class DefaultConfig implements Config {
     defenderTroopLoss: number;
     tilesPerTickUsed: number;
   } {
+    if (
+      defender.isPlayer() &&
+      isZombiePlayer(defender) &&
+      !isCuredPlayer(attacker)
+    ) {
+      const effectiveDefenderTroopsPerTile = Math.max(
+        ZOMBIE_UNCURED_DEFENSE_FLOOR_PER_TILE,
+        defender.troops() / Math.max(defender.numTilesOwned(), 1),
+      );
+      return {
+        attackerTroopLoss:
+          effectiveDefenderTroopsPerTile *
+          ZOMBIE_UNCURED_ATTACKER_LOSS_MULTIPLIER,
+        defenderTroopLoss: Math.max(
+          1,
+          effectiveDefenderTroopsPerTile *
+            ZOMBIE_UNCURED_DEFENDER_LOSS_MULTIPLIER,
+        ),
+        tilesPerTickUsed: 1,
+      };
+    }
+
+    if (
+      defender.isPlayer() &&
+      isZombiePlayer(defender) &&
+      isCuredPlayer(attacker)
+    ) {
+      return {
+        attackerTroopLoss: 0.1,
+        defenderTroopLoss: Math.max(
+          1,
+          (defender.troops() / Math.max(defender.numTilesOwned(), 1)) * 100,
+        ),
+        tilesPerTickUsed: 1,
+      };
+    }
+
+    if (!defender.isPlayer() && isZombiePlayer(attacker) && gm.hasFallout(tileToConquer)) {
+      return {
+        attackerTroopLoss: 0.1,
+        defenderTroopLoss: 0,
+        tilesPerTickUsed: 1,
+      };
+    }
+
     let mag = 0;
     let speed = 0;
     const type = gm.terrainType(tileToConquer);
@@ -704,6 +773,34 @@ export class DefaultConfig implements Config {
     defender: Player | TerraNullius,
     numAdjacentTilesWithEnemy: number,
   ): number {
+    if (
+      defender.isPlayer() &&
+      isZombiePlayer(defender) &&
+      !isCuredPlayer(attacker)
+    ) {
+      const base =
+        defender.troops() > 0
+          ? within(((5 * attackTroops) / defender.troops()) * 2, 0.01, 0.5) *
+            numAdjacentTilesWithEnemy *
+            3
+          : numAdjacentTilesWithEnemy * 3;
+      return base * 0.05;
+    }
+
+    if (
+      defender.isPlayer() &&
+      isZombiePlayer(defender) &&
+      isCuredPlayer(attacker)
+    ) {
+      const base =
+        defender.troops() > 0
+          ? within(((5 * attackTroops) / defender.troops()) * 2, 0.01, 0.5) *
+            numAdjacentTilesWithEnemy *
+            3
+          : numAdjacentTilesWithEnemy * 3;
+      return base * 100;
+    }
+
     if (defender.isPlayer()) {
       return (
         within(((5 * attackTroops) / defender.troops()) * 2, 0.01, 0.5) *
@@ -764,13 +861,14 @@ export class DefaultConfig implements Config {
     return this.infiniteTroops() ? 1_000_000 : 25_000;
   }
 
-  maxTroops(player: Player | PlayerView): number {
+  private standardMaxTroops(player: Player | PlayerView): number {
     const maxTroops =
       player.type() === PlayerType.Human && this.infiniteTroops()
         ? 1_000_000_000
         : 2 * (Math.pow(player.numTilesOwned(), 0.6) * 1000 + 50000) +
           player
             .units(UnitType.City)
+            .filter((city) => !city.isRuined())
             .map((city) => city.level())
             .reduce((a, b) => a + b, 0) *
             this.cityTroopIncrease();
@@ -797,8 +895,23 @@ export class DefaultConfig implements Config {
     }
   }
 
-  troopIncreaseRate(player: Player): number {
-    const max = this.maxTroops(player);
+  maxTroops(player: Player | PlayerView): number {
+    const maxTroops = this.standardMaxTroops(player);
+    if (isZombiePlayer(player)) {
+      const infestationBonus =
+        Math.floor(
+          player.numTilesOwned() / ZOMBIE_INFESTATION_TILES_PER_CAP_BONUS,
+        ) * ZOMBIE_INFESTATION_CAP_BONUS;
+      return maxTroops * ZOMBIE_MAX_TROOPS_MULTIPLIER + infestationBonus;
+    }
+    return maxTroops;
+  }
+
+  private calculateTroopIncreaseRate(
+    player: Player,
+    maxTroops: number,
+  ): number {
+    const max = Math.max(1, maxTroops);
 
     let toAdd = 10 + Math.pow(player.troops(), 0.73) / 4;
 
@@ -829,6 +942,24 @@ export class DefaultConfig implements Config {
     }
 
     return Math.min(player.troops() + toAdd, max) - player.troops();
+  }
+
+  troopIncreaseRate(player: Player): number {
+    if (isZombiePlayer(player)) {
+      const zombieMaxTroops = this.maxTroops(player);
+      const zombieBaseRate = Math.max(
+        0,
+        this.calculateTroopIncreaseRate(player, zombieMaxTroops),
+      );
+      return (
+        Math.min(
+          player.troops() + zombieBaseRate * ZOMBIE_TROOP_REGEN_MULTIPLIER,
+          zombieMaxTroops,
+        ) - player.troops()
+      );
+    }
+
+    return this.calculateTroopIncreaseRate(player, this.maxTroops(player));
   }
 
   goldAdditionRate(player: Player): Gold {

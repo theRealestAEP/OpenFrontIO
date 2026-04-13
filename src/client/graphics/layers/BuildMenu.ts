@@ -35,6 +35,7 @@ const missileSiloIcon = assetUrl("images/MissileSiloIconWhite.svg");
 const hydrogenBombIcon = assetUrl("images/MushroomCloudIconWhite.svg");
 const atomBombIcon = assetUrl("images/NukeIconWhite.svg");
 const portIcon = assetUrl("images/PortIcon.svg");
+const researchLabIcon = assetUrl("images/ResearchLabIcon.svg");
 const samlauncherIcon = assetUrl("images/SamLauncherIconWhite.svg");
 const shieldIcon = assetUrl("images/ShieldIconWhite.svg");
 
@@ -116,6 +117,13 @@ export const buildTable: BuildItemDisplay[][] = [
       icon: factoryIcon,
       description: "build_menu.desc.factory",
       key: "unit_type.factory",
+      countable: true,
+    },
+    {
+      unitType: UnitType.ResearchLab,
+      icon: researchLabIcon,
+      description: "build_menu.desc.research_lab",
+      key: "unit_type.research_lab",
       countable: true,
     },
   ],
@@ -236,6 +244,15 @@ export class BuildMenu extends LitElement implements Layer {
     .build-icon {
       font-size: 40px;
       margin-bottom: 5px;
+    }
+    .build-icon-image {
+      width: 40px;
+      height: 40px;
+      object-fit: contain;
+    }
+    .build-icon-image--monochrome {
+      filter: brightness(0) saturate(100%) invert(1) contrast(1.15)
+        drop-shadow(0 1px 1px rgba(0, 0, 0, 0.8));
     }
     .build-name {
       font-size: 14px;
@@ -382,6 +399,12 @@ export class BuildMenu extends LitElement implements Layer {
     return player.totalUnitLevels(item.unitType).toString();
   }
 
+  private buildIconClass(item: BuildItemDisplay): string {
+    return item.unitType === UnitType.ResearchLab
+      ? "build-icon-image build-icon-image--monochrome"
+      : "build-icon-image";
+  }
+
   public sendBuildOrUpgrade(buildableUnit: BuildableUnit, tile: TileRef): void {
     if (buildableUnit.canUpgrade !== false) {
       this.eventBus.emit(
@@ -435,6 +458,7 @@ export class BuildMenu extends LitElement implements Layer {
                     <img
                       src=${item.icon}
                       alt="${item.unitType}"
+                      class=${this.buildIconClass(item)}
                       width="40"
                       height="40"
                     />

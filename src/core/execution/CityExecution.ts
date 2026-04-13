@@ -13,6 +13,13 @@ export class CityExecution implements Execution {
   }
 
   tick(ticks: number): void {
+    if (this.city.isRuined()) {
+      if (this.city.hasTrainStation()) {
+        this.mg.railNetwork().removeStation(this.city);
+      }
+      this.active = false;
+      return;
+    }
     if (!this.stationCreated) {
       this.createStation();
       this.stationCreated = true;

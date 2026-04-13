@@ -104,7 +104,7 @@ export class AiAttackBehavior {
     // Check if we've already sent out the maximum number of transport ships
     if (
       this.player.unitCount(UnitType.TransportShip) >=
-      this.game.config().boatMaxNumber()
+      this.game.config().boatMaxNumber(this.player)
     ) {
       return;
     }
@@ -569,7 +569,7 @@ export class AiAttackBehavior {
     // Check if we've already sent out the maximum number of transport ships
     if (
       this.player.unitCount(UnitType.TransportShip) >=
-      this.game.config().boatMaxNumber()
+      this.game.config().boatMaxNumber(this.player)
     ) {
       return null;
     }

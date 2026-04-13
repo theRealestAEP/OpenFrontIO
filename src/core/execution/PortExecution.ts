@@ -31,6 +31,14 @@ export class PortExecution implements Execution {
       return;
     }
 
+    if (this.port.isRuined()) {
+      if (this.port.hasTrainStation()) {
+        this.mg.railNetwork().removeStation(this.port);
+      }
+      this.active = false;
+      return;
+    }
+
     if (this.port.isUnderConstruction()) {
       return;
     }
@@ -101,6 +109,7 @@ export class PortExecution implements Execution {
       .players()
       .filter((p) => p !== this.port!.owner() && p.canTrade(this.port!.owner()))
       .flatMap((p) => p.units(UnitType.Port))
+      .filter((port) => !port.isRuined())
       .sort((p1, p2) => {
         return (
           this.mg.manhattanDist(this.port!.tile(), p1.tile()) -

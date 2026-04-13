@@ -11,6 +11,7 @@ import {
   PublicGameModifiers,
   Quads,
   RankedType,
+  SpecialRuleset,
   Trios,
   UnitType,
   mapCategories,
@@ -162,11 +163,16 @@ export class MapPlaylist {
     ffa: [],
     special: [],
     team: [],
+    zombie: [],
   };
+  private nextZombieMode: GameMode = GameMode.FFA;
 
   public async gameConfig(type: PublicGameType): Promise<GameConfig> {
     if (type === "special") {
       return this.getSpecialConfig();
+    }
+    if (type === "zombie") {
+      return this.getZombieConfig();
     }
 
     const mode = type === "ffa" ? GameMode.FFA : GameMode.Team;
@@ -211,6 +217,50 @@ export class MapPlaylist {
       bots: isCompact ? 100 : 400,
       spawnImmunityDuration: this.getSpawnImmunityDuration(playerTeams),
       disabledUnits: [],
+    } satisfies GameConfig;
+  }
+
+  private async getZombieConfig(): Promise<GameConfig> {
+    const mode = this.nextZombieMode;
+    this.nextZombieMode = mode === GameMode.FFA ? GameMode.Team : GameMode.FFA;
+
+    const map = this.getNextMap("zombie");
+    const playerTeams =
+      mode === GameMode.Team ? this.getZombieTeamCount(map) : undefined;
+
+    let isCompact: boolean | undefined =
+      this.playlists.zombie.length % 3 === 0 || undefined;
+    if (
+      isCompact &&
+      mode === GameMode.Team &&
+      !(await this.supportsCompactMapForTeams(map, playerTeams!))
+    ) {
+      isCompact = undefined;
+    }
+
+    return {
+      donateGold: mode === GameMode.Team,
+      donateTroops: mode === GameMode.Team,
+      gameMap: map,
+      maxPlayers: await this.lobbyMaxPlayers(map, mode, playerTeams, isCompact),
+      gameType: GameType.Public,
+      gameMapSize: isCompact ? GameMapSize.Compact : GameMapSize.Normal,
+      publicGameModifiers: {
+        isCompact,
+      },
+      difficulty: Difficulty.Medium,
+      infiniteGold: false,
+      infiniteTroops: false,
+      maxTimerValue: undefined,
+      instantBuild: false,
+      randomSpawn: false,
+      nations: "default",
+      gameMode: mode,
+      playerTeams,
+      bots: isCompact ? 100 : 400,
+      spawnImmunityDuration: this.getSpawnImmunityDuration(playerTeams),
+      disabledUnits: [],
+      specialRuleset: SpecialRuleset.ZombieSurvival,
     } satisfies GameConfig;
   }
 
@@ -537,6 +587,31 @@ export class MapPlaylist {
       }
     }
     return TEAM_WEIGHTS[0].config;
+  }
+
+  private getZombieTeamCount(map: GameMapType): TeamCountConfig {
+    if (map === GameMapType.Baikal && Math.random() < 0.75) {
+      return 2;
+    }
+    if (map === GameMapType.FourIslands && Math.random() < 0.75) {
+      return 4;
+    }
+
+    const weights = TEAM_WEIGHTS.filter(
+      (entry) => entry.config !== HumansVsNations,
+    );
+    const totalWeight = weights.reduce((sum, weight) => sum + weight.weight, 0);
+    const roll = Math.random() * totalWeight;
+
+    let cumulativeWeight = 0;
+    for (const { config, weight } of weights) {
+      cumulativeWeight += weight;
+      if (roll < cumulativeWeight) {
+        return config;
+      }
+    }
+
+    return weights[0].config;
   }
 
   private getRandomSpecialGameModifiers(

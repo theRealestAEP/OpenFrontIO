@@ -2,6 +2,7 @@ import { html, TemplateResult } from "lit";
 import { customElement, property, query, state } from "lit/decorators.js";
 import {
   calculateServerTimeOffset,
+  getGameModeLabel,
   getMapName,
   getSecondsUntilServerTimestamp,
   getServerNow,
@@ -20,13 +21,7 @@ import {
   PublicGameInfo,
 } from "../core/Schemas";
 import { getRuntimeClientServerConfig } from "../core/configuration/ConfigLoader";
-import {
-  Difficulty,
-  GameMapSize,
-  GameMode,
-  GameType,
-  HumansVsNations,
-} from "../core/game/Game";
+import { Difficulty, GameMapSize, GameMode, GameType } from "../core/game/Game";
 import { getApiBase } from "./Api";
 import { crazyGamesSDK } from "./CrazyGamesSDK";
 import { JoinLobbyEvent } from "./Main";
@@ -441,20 +436,10 @@ export class JoinLobbyModal extends BaseModal {
       `maps/${encodeURIComponent(normalizedMap)}/thumbnail.webp`,
     );
     const isTeam = c.gameMode === GameMode.Team;
-
     let modeSubtitle: string;
-    if (!isTeam) {
-      modeSubtitle = translateText("game_mode.ffa");
-    } else if (c.playerTeams === HumansVsNations) {
-      modeSubtitle = translateText("host_modal.teams_Humans Vs Nations");
-    } else if (typeof c.playerTeams === "string") {
-      modeSubtitle = translateText("host_modal.teams_" + c.playerTeams);
-    } else if (typeof c.playerTeams === "number") {
-      modeSubtitle = translateText("public_lobby.teams", {
-        num: c.playerTeams,
-      });
-    } else {
-      modeSubtitle = translateText("game_mode.ffa");
+    modeSubtitle = getGameModeLabel(c);
+    if (c.specialRuleset === "zombie_survival") {
+      modeSubtitle = `${translateText("game_mode.zombie_survival")} • ${modeSubtitle}`;
     }
 
     const pm = c.publicGameModifiers;
@@ -657,6 +642,7 @@ export class JoinLobbyModal extends BaseModal {
       "Missile Silo": "unit_type.missile_silo",
       Warship: "unit_type.warship",
       Factory: "unit_type.factory",
+      "Research Lab": "unit_type.research_lab",
       "Atom Bomb": "unit_type.atom_bomb",
       "Hydrogen Bomb": "unit_type.hydrogen_bomb",
       MIRV: "unit_type.mirv",

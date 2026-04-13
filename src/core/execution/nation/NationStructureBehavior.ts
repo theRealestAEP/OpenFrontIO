@@ -11,6 +11,10 @@ import {
 } from "../../game/Game";
 import { TileRef } from "../../game/GameMap";
 import { Cluster } from "../../game/TrainStation";
+import {
+  canPlayerResearchCure,
+  isZombieRulesetGame,
+} from "../../game/ZombieUtils";
 import { PseudoRandom } from "../../PseudoRandom";
 import { assertNever } from "../../Util";
 import { ConstructionExecution } from "../ConstructionExecution";
@@ -108,6 +112,17 @@ export class NationStructureBehavior {
         )
       : this.player.unitsOwned(UnitType.City);
     const hasCoastalTiles = this.hasCoastalTiles();
+
+    if (
+      isZombieRulesetGame(this.game) &&
+      canPlayerResearchCure(this.player) &&
+      !config.isUnitDisabled(UnitType.ResearchLab) &&
+      cityCount >= 3 &&
+      this.player.gold() >= this.cost(UnitType.ResearchLab) &&
+      this.maybeSpawnStructure(UnitType.ResearchLab)
+    ) {
+      return true;
+    }
 
     // Build order for non-city structures (priority order)
     const buildOrder: UnitType[] = [
@@ -499,6 +514,8 @@ export class NationStructureBehavior {
     switch (type) {
       case UnitType.City:
         return this.cityValue();
+      case UnitType.ResearchLab:
+        return this.researchLabValue();
       case UnitType.MissileSilo:
         return this.missileSiloValue();
       case UnitType.Factory:
@@ -512,6 +529,54 @@ export class NationStructureBehavior {
       default:
         throw new Error(`Value function not implemented for ${type}`);
     }
+  }
+
+  /**
+   * Value function for research labs.
+   * Prefers protected interior tiles with spacing from other strategic
+   * structures so cure research is less likely to sit on an active frontline.
+   */
+  private researchLabValue(): (tile: TileRef) => number {
+    const game = this.game;
+    const player = this.player;
+    const borderTiles = player.borderTiles();
+    const otherUnits = player.units(UnitType.ResearchLab);
+    const strategicTiles: Set<TileRef> = new Set(
+      player
+        .units(UnitType.City, UnitType.Factory, UnitType.MissileSilo)
+        .map((u) => u.tile()),
+    );
+    const { borderSpacing, structureSpacing } = this.spacingConstants();
+    const strategicSpacing = Math.max(1, Math.floor(structureSpacing * 0.6));
+
+    return (tile) => {
+      let w = 0;
+
+      // Prefer higher elevations.
+      w += game.magnitude(tile);
+
+      // Prefer to be away from the border.
+      const [, closestBorderDist] = closestTile(game, borderTiles, tile);
+      w += Math.min(closestBorderDist, borderSpacing);
+
+      // Prefer to be away from other research labs.
+      const otherTiles: Set<TileRef> = new Set(otherUnits.map((u) => u.tile()));
+      otherTiles.delete(tile);
+      const closestOther = closestTwoTiles(game, otherTiles, [tile]);
+      if (closestOther !== null) {
+        const d = game.manhattanDist(closestOther.x, tile);
+        w += Math.min(d, structureSpacing);
+      }
+
+      // Prefer to be separated from existing high-value structures.
+      const closestStrategic = closestTwoTiles(game, strategicTiles, [tile]);
+      if (closestStrategic !== null) {
+        const d = game.manhattanDist(closestStrategic.x, tile);
+        w += Math.min(d, strategicSpacing);
+      }
+
+      return w;
+    };
   }
 
   /**

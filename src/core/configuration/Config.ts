@@ -112,7 +112,7 @@ export interface Config {
   cityTroopIncrease(): number;
   boatAttackAmount(attacker: Player, defender: Player | TerraNullius): number;
   shellLifetime(): number;
-  boatMaxNumber(): number;
+  boatMaxNumber(player?: Player | PlayerView): number;
   allianceDuration(): Tick;
   allianceRequestDuration(): Tick;
   allianceRequestCooldown(): Tick;

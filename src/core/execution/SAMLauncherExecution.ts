@@ -243,6 +243,10 @@ export class SAMLauncherExecution implements Execution {
     }
     this.targetingSystem ??= new SAMTargetingSystem(this.mg, this.sam);
 
+    if (this.sam.isRuined()) {
+      return;
+    }
+
     if (this.sam.isUnderConstruction()) {
       return;
     }

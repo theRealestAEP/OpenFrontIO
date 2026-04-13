@@ -8,6 +8,7 @@ import {
 import type { GameEvent } from "./EventBus";
 import {
   AllPlayers,
+  CureState,
   Difficulty,
   Duos,
   GameMapSize,
@@ -15,8 +16,10 @@ import {
   GameMode,
   GameType,
   HumansVsNations,
+  PlayerSpecialRole,
   Quads,
   RankedType,
+  SpecialRuleset,
   Trios,
   UnitType,
 } from "./game/Game";
@@ -137,7 +140,12 @@ export type PublicGames = z.infer<typeof PublicGamesSchema>;
 export type PublicGameInfo = z.infer<typeof PublicGameInfoSchema>;
 export type PublicGameType = z.infer<typeof PublicGameTypeSchema>;
 
-export const PublicGameTypeSchema = z.enum(["ffa", "team", "special"]);
+export const PublicGameTypeSchema = z.enum([
+  "ffa",
+  "team",
+  "special",
+  "zombie",
+]);
 
 export const UsernameSchema = z
   .string()
@@ -219,6 +227,7 @@ export const GameConfigSchema = z.object({
   donateTroops: z.boolean(), // Configures donations to humans only
   gameType: z.enum(GameType),
   gameMode: z.enum(GameMode),
+  specialRuleset: z.enum(SpecialRuleset).optional(),
   rankedType: z.enum(RankedType).optional(), // Only set for ranked games.
   gameMapSize: z.enum(GameMapSize),
   publicGameModifiers: z
@@ -259,6 +268,9 @@ export const GameConfigSchema = z.object({
   goldMultiplier: z.number().min(0.1).max(1000).nullable().optional(),
   startingGold: z.number().int().min(0).max(1000000000).nullable().optional(),
 });
+
+export const PlayerSpecialRoleSchema = z.enum(PlayerSpecialRole);
+export const CureStateSchema = z.enum(CureState);
 
 export const TeamSchema = z.string();
 

@@ -64,14 +64,14 @@ export class TransportShipExecution implements Execution {
 
     if (
       this.attacker.unitCount(UnitType.TransportShip) >=
-      mg.config().boatMaxNumber()
+      mg.config().boatMaxNumber(this.attacker)
     ) {
       mg.displayMessage(
         "events_display.no_boats_available",
         MessageType.ATTACK_FAILED,
         this.attacker.id(),
         undefined,
-        { max: mg.config().boatMaxNumber() },
+        { max: mg.config().boatMaxNumber(this.attacker) },
       );
       this.active = false;
       return;
