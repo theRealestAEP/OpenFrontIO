@@ -31,6 +31,8 @@ export class TradeShipExecution implements Execution {
   private motionPlanId = 1;
   private motionPlanDst: TileRef | null = null;
 
+  private static _staggerCounter = 0;
+
   constructor(
     private origOwner: Player,
     private sourceStructure: Unit,
@@ -40,7 +42,9 @@ export class TradeShipExecution implements Execution {
 
   init(mg: Game, ticks: number): void {
     this.mg = mg;
-    this.pathFinder = new WaterPathFinder(mg);
+    const stagger =
+      TradeShipExecution._staggerCounter++ % WaterPathFinder.STAGGER_SPREAD;
+    this.pathFinder = new WaterPathFinder(mg, stagger);
   }
 
   tick(ticks: number): void {
@@ -114,21 +118,23 @@ export class TradeShipExecution implements Execution {
         this.wasCaptured &&
         (tradeShipOwner !== dstPortOwner || !this._dstPort.isActive())
       ) {
+        const myComponent = this.mg.getWaterComponent(curTile);
         const nearestPort = findClosestBy(
           tradeShipOwner.units(UnitType.Port),
           (port) => this.mg.manhattanDist(port.tile(), curTile),
           (port) =>
             port.isActive() &&
             !port.isMarkedForDeletion() &&
-            !port.isUnderConstruction(),
+            !port.isUnderConstruction() &&
+            myComponent !== null &&
+            this.mg.hasWaterComponent(port.tile(), myComponent),
         );
         if (nearestPort === null) {
           this.tradeShip.delete(false);
           this.active = false;
           return;
-        } else {
-          this.updateDestination(nearestPort);
         }
+        this.updateDestination(nearestPort);
       }
     }
 
@@ -198,8 +204,8 @@ export class TradeShipExecution implements Execution {
 
   private complete() {
     this.active = false;
-    this.tradeShip!.delete(false);
     const gold = this.completedGold();
+    this.tradeShip!.delete(false);
 
     if (this.wasCaptured) {
       this.tradeShip!.owner().addGold(gold, this._dstPort.tile());
@@ -271,7 +277,10 @@ export class TradeShipExecution implements Execution {
     if (this.isOffshoreCargo()) {
       return toInt(this.options.cargoGold ?? 0);
     }
-    return this.mg.config().tradeShipGold(this.tilesTraveled);
+    return this.mg.config().tradeShipGold(
+      this.tilesTraveled,
+      this.tradeShip!.owner(),
+    );
   }
 
   private cargoMode(): "trade" | "offshore_oil" {

@@ -32,6 +32,8 @@ export class TransportShipExecution implements Execution {
   private target: Player | TerraNullius;
   private pathFinder: WaterPathFinder;
 
+  private static _staggerCounter = 0;
+
   private dst: TileRef | null;
   private src: TileRef | null;
   private retreatDst: TileRef | false | null = null;
@@ -63,7 +65,10 @@ export class TransportShipExecution implements Execution {
 
     this.lastMove = ticks;
     this.mg = mg;
-    this.pathFinder = new WaterPathFinder(mg);
+    this.target = mg.owner(this.ref);
+    const stagger =
+      TransportShipExecution._staggerCounter++ % WaterPathFinder.STAGGER_SPREAD;
+    this.pathFinder = new WaterPathFinder(mg, stagger);
 
     const targetInfo = resolveTransportTarget(this.mg, this.attacker, this.ref);
     if (targetInfo === null) {

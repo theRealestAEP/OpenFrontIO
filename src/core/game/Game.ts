@@ -149,6 +149,9 @@ export enum GameMapType {
   Dyslexdria = "Dyslexdria",
   GreatLakes = "Great Lakes",
   StraitOfMalacca = "Strait Of Malacca",
+  Luna = "Luna",
+  Conakry = "Conakry",
+  Caucasus = "Caucasus",
 }
 
 export type GameMapName = keyof typeof GameMapType;
@@ -203,6 +206,8 @@ export const mapCategories: Record<string, GameMapType[]> = {
     GameMapType.Mediterranean,
     GameMapType.GreatLakes,
     GameMapType.StraitOfMalacca,
+    GameMapType.Conakry,
+    GameMapType.Caucasus,
   ],
   fantasy: [
     GameMapType.Pangaea,
@@ -218,6 +223,7 @@ export const mapCategories: Record<string, GameMapType[]> = {
     GameMapType.Passage,
     GameMapType.MilkyWay,
     GameMapType.Dyslexdria,
+    GameMapType.Luna,
   ],
   arcade: [
     GameMapType.TheBox,

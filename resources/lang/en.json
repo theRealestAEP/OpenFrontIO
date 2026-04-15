@@ -207,7 +207,7 @@
     "max_timer": "Game length (minutes)",
     "max_timer_placeholder": "Mins",
     "max_timer_invalid": "Please enter a valid max timer value (1-120 minutes)",
-    "enables_title": "Enable Settings",
+    "enables_title": "Disable Units",
     "start": "Start Game",
     "options_changed_no_achievements": "Custom settings – achievements disabled",
     "gold_multiplier": "Gold multiplier",
@@ -359,7 +359,10 @@
     "mediterranean": "Mediterranean",
     "dyslexdria": "Dyslexdria",
     "greatlakes": "Great Lakes",
-    "straitofmalacca": "Strait Of Malacca"
+    "straitofmalacca": "Strait Of Malacca",
+    "luna": "Luna",
+    "conakry": "Conakry",
+    "caucasus": "Caucasus"
   },
   "map_categories": {
     "featured": "Featured",
@@ -385,7 +388,8 @@
     "disabled_units": "Disabled Units",
     "game_length": "Game length",
     "pvp_immunity": "PVP immunity duration",
-    "starting_gold": "Starting Gold"
+    "starting_gold": "Starting Gold",
+    "host_cheats": "Host Cheats"
   },
   "public_lobby": {
     "title": "Waiting for Game Start...",
@@ -439,7 +443,7 @@
     "compact_map": "Compact Map",
     "disable_alliances": "Disable alliances",
     "water_nukes": "Water nukes",
-    "enables_title": "Enable Settings",
+    "enables_title": "Disable Units",
     "player": "Player",
     "players": "Players",
     "nation_players": "Nations",
@@ -462,6 +466,7 @@
     "gold_multiplier_placeholder": "2.0x",
     "starting_gold": "Starting Gold (Millions)",
     "starting_gold_placeholder": "5",
+    "host_cheats": "Host Cheats",
     "leave_confirmation": "Are you sure you want to leave the lobby?"
   },
   "team_colors": {
@@ -952,7 +957,12 @@
     "no_flags": "No flags available. Check back later for new items.",
     "no_skins": "No skins available. Check back later for new items.",
     "no_packs": "No packs available. Check back later for new items.",
-    "currency_pack_purchase_success": "Currency pack purchase successful!"
+    "currency_pack_purchase_success": "Currency pack purchase successful!",
+    "checkout_failed": "Failed to create checkout session.",
+    "login_required": "You must be logged in to purchase with currency.",
+    "not_enough_currency": "Not enough currency for this purchase.",
+    "purchase_failed": "Purchase failed. Please try again.",
+    "purchase_success": "Purchase succeeded: {name}"
   },
   "territory_patterns": {
     "title": "Skins",
