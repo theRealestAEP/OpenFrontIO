@@ -134,12 +134,14 @@ export class GameRunner {
 
     let updates: GameUpdates;
     let tickExecutionDuration: number = 0;
+    let tickExecutionBreakdown: Record<string, number> | undefined;
 
     try {
       const startTime = performance.now();
       updates = this.game.executeNextTick();
       const endTime = performance.now();
       tickExecutionDuration = endTime - startTime;
+      tickExecutionBreakdown = this.game.consumeTickExecutionBreakdown();
     } catch (error: unknown) {
       if (error instanceof Error) {
         console.error("Game tick error:", error.message);
@@ -182,6 +184,7 @@ export class GameRunner {
       updates: updates,
       playerNameViewData: this.playerViewData,
       tickExecutionDuration: tickExecutionDuration,
+      ...(tickExecutionBreakdown ? { tickExecutionBreakdown } : {}),
       pendingTurns: pendingTurns ?? 0,
     });
     this.isExecuting = false;

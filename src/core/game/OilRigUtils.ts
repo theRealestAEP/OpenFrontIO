@@ -4,6 +4,7 @@ import { TileRef } from "./GameMap";
 import type { OilFieldView } from "./OilField";
 
 export const OFFSHORE_OIL_RIG_WEIGHT_MULTIPLIER = 1.5;
+export const OFFSHORE_OIL_RIG_MIN_DIST_MULTIPLIER = 1.25;
 
 type PortLike = {
   tile(): TileRef;
@@ -41,6 +42,12 @@ export function oilRigEffectiveWeight(game: Game, rig: Unit): number {
   return rig.level() * multiplier;
 }
 
+export function oilRigPlacementMinDist(game: Game): number {
+  return Math.ceil(
+    game.config().structureMinDist() * OFFSHORE_OIL_RIG_MIN_DIST_MULTIPLIER,
+  );
+}
+
 export function canPlaceOilRigAt(
   game: Game,
   tile: TileRef,
@@ -50,14 +57,21 @@ export function canPlaceOilRigAt(
     return false;
   }
 
-  const minDistSquared = game.config().structureMinDist() ** 2;
+  const structureMinDist = game.config().structureMinDist();
+  const structureMinDistSquared = structureMinDist ** 2;
+  const oilRigMinDist = oilRigPlacementMinDist(game);
+  const oilRigMinDistSquared = oilRigMinDist ** 2;
   for (const { unit } of game.nearbyUnits(
     tile,
-    game.config().structureMinDist(),
+    oilRigMinDist,
     Structures.types,
     undefined,
     true,
   )) {
+    const minDistSquared =
+      unit.type() === UnitType.OilRig
+        ? oilRigMinDistSquared
+        : structureMinDistSquared;
     if (game.euclideanDistSquared(tile, unit.tile()) < minDistSquared) {
       return false;
     }
@@ -70,7 +84,7 @@ export function canPlaceOilRigAt(
     const targetTile = ship.targetTile();
     if (
       targetTile !== undefined &&
-      game.euclideanDistSquared(tile, targetTile) < minDistSquared
+      game.euclideanDistSquared(tile, targetTile) < oilRigMinDistSquared
     ) {
       return false;
     }

@@ -13,6 +13,29 @@ let game: Game;
 let player: Player;
 let otherPlayer: Player;
 
+function buildReachablePort(game: Game, player: Player, oceanTile: number) {
+  const minDistSquared = game.config().structureMinDist() ** 2;
+
+  for (let y = 0; y < game.height(); y++) {
+    for (let x = 0; x < game.width(); x++) {
+      const tile = game.ref(x, y);
+      if (!game.isOceanShore(tile)) {
+        continue;
+      }
+      if (game.getWaterComponent(tile) !== game.getWaterComponent(oceanTile)) {
+        continue;
+      }
+      if (game.euclideanDistSquared(tile, oceanTile) < minDistSquared) {
+        continue;
+      }
+      player.conquer(tile);
+      return player.buildUnit(UnitType.Port, tile, {});
+    }
+  }
+
+  throw new Error("Expected a reachable port tile for offshore rig test");
+}
+
 describe("PlayerExecution", () => {
   beforeEach(async () => {
     game = await setup(
@@ -126,6 +149,7 @@ describe("PlayerExecution", () => {
     }
 
     offshorePlayer.conquer(offshoreGame.ref(0, 0));
+    buildReachablePort(offshoreGame, offshorePlayer, oceanTile);
     const rig = offshorePlayer.buildUnit(UnitType.OilRig, oceanTile, {});
 
     executeTicks(offshoreGame, 3);

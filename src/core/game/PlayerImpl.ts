@@ -49,7 +49,10 @@ import {
   GameUpdateType,
   PlayerUpdate,
 } from "./GameUpdates";
-import { canPlaceOilRigAt, findReachableOilRigPort } from "./OilRigUtils";
+import {
+  canPlaceOilRigAt,
+  hasReachableOilRigPort,
+} from "./OilRigUtils";
 import {
   bestShoreDeploymentSource,
   canBuildTransportShip,
@@ -1129,16 +1132,21 @@ export class PlayerImpl implements Player {
       }
 
       const buildNew = canBuild !== false && canUpgrade === false;
+      const usesRailPreview =
+        buildNew &&
+        (u === UnitType.City ||
+          u === UnitType.Port ||
+          u === UnitType.Factory);
 
       result[i] = {
         type: u,
         canBuild,
         canUpgrade,
         cost,
-        overlappingRailroads: buildNew
+        overlappingRailroads: usesRailPreview
           ? rail.overlappingRailroads(canBuild as TileRef)
           : [],
-        ghostRailPaths: buildNew
+        ghostRailPaths: usesRailPreview
           ? rail.computeGhostRailPaths(u, canBuild as TileRef)
           : [],
       };
@@ -1197,7 +1205,7 @@ export class PlayerImpl implements Player {
       case UnitType.Factory:
         return this.landBasedStructureSpawn(targetTile, validTiles);
       case UnitType.OilRig:
-        return this.oilRigSpawn(targetTile, validTiles);
+        return this.oilRigSpawn(targetTile);
       default:
         assertNever(unitType);
     }
@@ -1255,7 +1263,7 @@ export class PlayerImpl implements Player {
         manhattanDistFN(tile, this.mg.config().radiusPortSpawn()),
       ),
     )
-      .filter((t) => this.mg.owner(t) === this && this.mg.isShore(t))
+      .filter((t) => this.mg.owner(t) === this && this.mg.isOceanShore(t))
       .sort(
         (a, b) =>
           this.mg.manhattanDist(a, tile) - this.mg.manhattanDist(b, tile),
@@ -1305,22 +1313,7 @@ export class PlayerImpl implements Player {
     return tiles[0];
   }
 
-  oilRigSpawn(
-    tile: TileRef,
-    validTiles: TileRef[] | null = null,
-  ): TileRef | false {
-    if (this.mg.isOcean(tile)) {
-      return this.offshoreOilRigSpawn(tile);
-    }
-
-    const spawn = this.landBasedStructureSpawn(tile, validTiles);
-    if (spawn === false) {
-      return false;
-    }
-    return this.mg.oilFieldAt(spawn)?.remainingReserve ? spawn : false;
-  }
-
-  private offshoreOilRigSpawn(tile: TileRef): TileRef | false {
+  oilRigSpawn(tile: TileRef): TileRef | false {
     if (!this.mg.isOcean(tile)) {
       return false;
     }
@@ -1334,7 +1327,12 @@ export class PlayerImpl implements Player {
       return false;
     }
 
-    return findReachableOilRigPort(this.mg, this, tile) === null ? false : tile;
+    // Build previews call `canBuild()` very frequently while the cursor moves.
+    // For that hot path we only need a yes/no answer, so use the cheap water-
+    // component reachability check here instead of full port pathfinding.
+    // The actual offshore deployment execution still resolves the best port and
+    // revalidates placement before spawning the rig ship.
+    return hasReachableOilRigPort(this.mg, this, tile) ? tile : false;
   }
 
   private validStructureSpawnTiles(tile: TileRef): TileRef[] {

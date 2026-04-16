@@ -405,7 +405,11 @@ export class BuildMenu extends LitElement implements Layer {
           ? this.uiState.rocketDirectionUp
           : undefined;
       this.eventBus.emit(
-        new BuildUnitIntentEvent(buildableUnit.type, tile, rocketDirectionUp),
+        new BuildUnitIntentEvent(
+          buildableUnit.type,
+          buildableUnit.canBuild,
+          rocketDirectionUp,
+        ),
       );
     }
     this.hideMenu();

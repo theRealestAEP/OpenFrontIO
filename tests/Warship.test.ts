@@ -317,6 +317,7 @@ describe("Warship", () => {
 
   test("Warship does not capture finished offshore oil rigs", async () => {
     const oceanTile = firstActiveOceanOilTile(game);
+    buildReachablePort(game, player2, oceanTile);
     const rig = player2.buildUnit(UnitType.OilRig, oceanTile, {});
     const warshipTile = nearbyOceanTile(game, oceanTile);
 
@@ -335,6 +336,7 @@ describe("Warship", () => {
 
   test("Warship does not capture offshore oil rigs while they are under construction", async () => {
     const oceanTile = firstActiveOceanOilTile(game);
+    buildReachablePort(game, player2, oceanTile);
     const rig = player2.buildUnit(UnitType.OilRig, oceanTile, {});
     rig.setUnderConstruction(true);
     const warshipTile = nearbyOceanTile(game, oceanTile);

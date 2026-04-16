@@ -19,6 +19,7 @@ interface TradeShipExecutionOptions {
   cargoMode?: "trade" | "offshore_oil";
   cargoSourceTile?: TileRef;
   onSpawnFailed?: () => void;
+  onSettled?: () => void;
 }
 
 export class TradeShipExecution implements Execution {
@@ -30,6 +31,7 @@ export class TradeShipExecution implements Execution {
   private tilesTraveled = 0;
   private motionPlanId = 1;
   private motionPlanDst: TileRef | null = null;
+  private settled = false;
 
   private static _staggerCounter = 0;
 
@@ -60,7 +62,7 @@ export class TradeShipExecution implements Execution {
       if (spawn === false) {
         console.warn(`cannot build trade ship`);
         this.options.onSpawnFailed?.();
-        this.active = false;
+        this.settle();
         return;
       }
       const tradeShipParams = {
@@ -79,7 +81,7 @@ export class TradeShipExecution implements Execution {
     }
 
     if (!this.tradeShip.isActive()) {
-      this.active = false;
+      this.settle();
       return;
     }
 
@@ -101,7 +103,7 @@ export class TradeShipExecution implements Execution {
       // the ship.
       if (dstPortOwner.id() === this.sourceStructure.owner().id()) {
         this.tradeShip.delete(false);
-        this.active = false;
+        this.settle();
         return;
       }
 
@@ -110,7 +112,7 @@ export class TradeShipExecution implements Execution {
         (!this._dstPort.isActive() || !tradeShipOwner.canTrade(dstPortOwner))
       ) {
         this.tradeShip.delete(false);
-        this.active = false;
+        this.settle();
         return;
       }
 
@@ -131,7 +133,7 @@ export class TradeShipExecution implements Execution {
         );
         if (nearestPort === null) {
           this.tradeShip.delete(false);
-          this.active = false;
+          this.settle();
           return;
         }
         this.updateDestination(nearestPort);
@@ -197,22 +199,26 @@ export class TradeShipExecution implements Execution {
         if (this.tradeShip.isActive()) {
           this.tradeShip.delete(false);
         }
-        this.active = false;
+        this.settle();
         return;
     }
   }
 
   private complete() {
-    this.active = false;
+    if (!this.tradeShip) {
+      this.settle();
+      return;
+    }
     const gold = this.completedGold();
-    this.tradeShip!.delete(false);
+    const tradeShip = this.tradeShip;
+    tradeShip.delete(false);
 
     if (this.wasCaptured) {
-      this.tradeShip!.owner().addGold(gold, this._dstPort.tile());
+      tradeShip.owner().addGold(gold, this._dstPort.tile());
       this.mg.displayMessage(
         "events_display.received_gold_from_captured_ship",
         MessageType.CAPTURED_ENEMY_UNIT,
-        this.tradeShip!.owner().id(),
+        tradeShip.owner().id(),
         gold,
         {
           gold: renderNumber(gold),
@@ -222,10 +228,10 @@ export class TradeShipExecution implements Execution {
       // Record stats
       this.mg
         .stats()
-        .boatCapturedTrade(this.tradeShip!.owner(), this.origOwner, gold);
+        .boatCapturedTrade(tradeShip.owner(), this.origOwner, gold);
     } else if (this.isOffshoreCargo()) {
-      this.tradeShip!.owner().addGold(gold, this._dstPort.tile());
-      this.mg.stats().goldWork(this.tradeShip!.owner(), gold);
+      tradeShip.owner().addGold(gold, this._dstPort.tile());
+      this.mg.stats().goldWork(tradeShip.owner(), gold);
     } else {
       this.sourceStructure.owner().addGold(gold);
       this._dstPort.owner().addGold(gold, this._dstPort.tile());
@@ -258,7 +264,7 @@ export class TradeShipExecution implements Execution {
           gold,
         );
     }
-    return;
+    this.settle();
   }
 
   isActive(): boolean {
@@ -304,11 +310,20 @@ export class TradeShipExecution implements Execution {
     const nearestPort = findReachableOilRigPort(this.mg, owner, curTile);
     if (nearestPort === null) {
       this.tradeShip!.delete(false);
-      this.active = false;
+      this.settle();
       return false;
     }
     this.updateDestination(nearestPort);
     return true;
+  }
+
+  private settle(): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.active = false;
+    this.options.onSettled?.();
   }
 
   private updateDestination(port: Unit): void {

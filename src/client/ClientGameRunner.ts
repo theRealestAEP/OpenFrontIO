@@ -408,7 +408,11 @@ export class ClientGameRunner {
 
       // Emit tick metrics event for performance overlay
       this.eventBus.emit(
-        new TickMetricsEvent(gu.tickExecutionDuration, this.currentTickDelay),
+        new TickMetricsEvent(
+          gu.tickExecutionDuration,
+          this.currentTickDelay,
+          gu.tickExecutionBreakdown,
+        ),
       );
 
       // Reset tick delay for next measurement
@@ -564,7 +568,7 @@ export class ClientGameRunner {
       return;
     }
     console.log(`clicked cell ${cell}`);
-    const tile = this.resolveInteractionTile(this.gameView.ref(cell.x, cell.y));
+    const tile = this.gameView.ref(cell.x, cell.y);
     if (
       this.gameView.isLand(tile) &&
       !this.gameView.hasOwner(tile) &&
@@ -733,7 +737,7 @@ export class ClientGameRunner {
     if (!this.gameView.isValidCoord(cell.x, cell.y)) {
       return null;
     }
-    return this.resolveInteractionTile(this.gameView.ref(cell.x, cell.y));
+    return this.gameView.ref(cell.x, cell.y);
   }
 
   private canBoatAttack(buildables: BuildableUnit[]): false | TileRef {
@@ -753,6 +757,8 @@ export class ClientGameRunner {
   }
 
   private canAutoBoat(buildables: BuildableUnit[], tile: TileRef): boolean {
+    if (!this.gameView.isLand(tile)) return false;
+
     const canBuild = this.canBoatAttack(buildables);
     if (canBuild === false) return false;
 
@@ -768,10 +774,6 @@ export class ClientGameRunner {
 
   private onMouseMove(event: MouseMoveEvent) {
     this.lastMousePosition = { x: event.x, y: event.y };
-  }
-
-  private resolveInteractionTile(tile: TileRef): TileRef {
-    return this.gameView.resolveOffshoreInteractionTile(tile);
   }
 
   private onConnectionCheck() {

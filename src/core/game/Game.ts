@@ -934,6 +934,7 @@ export interface Game extends GameMap {
   oilFieldAt(tile: TileRef): OilFieldView | null;
   oilFieldById(fieldId: number): OilFieldView | null;
   isOilRigActive(unit: Unit): boolean;
+  consumeTickExecutionBreakdown(): Record<string, number> | undefined;
   extractOil(fieldId: number, amount: number): number;
   conquerPlayer(conqueror: Player, conquered: Player): void;
   miniWaterHPA(): PathFinder<number> | null;

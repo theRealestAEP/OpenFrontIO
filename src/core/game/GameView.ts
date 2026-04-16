@@ -1137,34 +1137,6 @@ export class GameView implements GameMap {
     return this.activePortComponents(unit.owner()).has(rigComponent);
   }
 
-  resolveOffshoreInteractionTile(
-    tile: TileRef,
-    searchRange: number = 6,
-  ): TileRef {
-    if (!this.isOcean(tile)) {
-      return tile;
-    }
-
-    let bestTile: TileRef | null = null;
-    let bestDistSquared = Number.POSITIVE_INFINITY;
-    for (const { unit, distSquared } of this.nearbyUnits(
-      tile,
-      searchRange,
-      UnitType.OilRig,
-      undefined,
-    )) {
-      if (unit.isUnderConstruction() || !this.isOcean(unit.tile())) {
-        continue;
-      }
-      if (distSquared < bestDistSquared) {
-        bestTile = unit.tile();
-        bestDistSquared = distSquared;
-      }
-    }
-
-    return bestTile ?? tile;
-  }
-
   recentlyUpdatedTerrainTiles(): TileRef[] {
     return this.updatedTerrainTiles;
   }

@@ -438,7 +438,7 @@ describe("NationStructureBehavior oil rigs", () => {
         return null;
       }),
       unitInfo: vi.fn(() => ({
-        cost: () => 1_000_000n,
+        cost: () => 250_000n,
       })),
       isOcean: vi.fn((tile: number) => tile >= 20),
       magnitude: vi.fn(() => 0),

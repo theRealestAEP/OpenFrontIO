@@ -6,6 +6,7 @@ import {
   PlayerBuildableUnitType,
   UnitType,
 } from "../../../core/game/Game";
+import { OFFSHORE_OIL_RIG_MIN_DIST_MULTIPLIER } from "../../../core/game/OilRigUtils";
 import { GameView, PlayerView, UnitView } from "../../../core/game/GameView";
 import { TransformHandler } from "../TransformHandler";
 const anchorIcon = assetUrl("images/AnchorIcon.png");
@@ -131,16 +132,25 @@ export class SpriteFactory {
     priceBox: { height: number; y: number; paddingX: number; minWidth: number };
   } {
     const parentContainer = new PIXI.Container();
+    if (structureType === UnitType.OilRig) {
+      const halo = new PIXI.Graphics();
+      halo
+        .circle(0, 0, ICON_SIZE.circle / 2 + 4)
+        .fill({ color: 0xf4d03f, alpha: 0.22 })
+        .stroke({ width: 2, color: 0xfff1a8, alpha: 0.95 });
+      parentContainer.addChild(halo);
+    }
     const texture = this.createTexture(
       structureType,
       player,
       false,
       false,
       true,
+      structureType === UnitType.OilRig,
     );
     const sprite = new PIXI.Sprite(texture);
     sprite.anchor.set(0.5);
-    sprite.alpha = 0.5;
+    sprite.alpha = structureType === UnitType.OilRig ? 0.9 : 0.5;
     parentContainer.addChild(sprite);
 
     const priceText = new PIXI.BitmapText({
@@ -505,7 +515,11 @@ export class SpriteFactory {
         radius = this.game.config().trainStationMaxRange();
         break;
       case UnitType.OilRig:
-        return null;
+        radius = Math.ceil(
+          this.game.config().structureMinDist() *
+            OFFSHORE_OIL_RIG_MIN_DIST_MULTIPLIER,
+        );
+        break;
       case UnitType.DefensePost:
         radius = this.game.config().defensePostRange();
         break;
@@ -520,11 +534,12 @@ export class SpriteFactory {
     }
     // Add warning colors (red/orange) when targeting an ally to indicate alliance will break
     const isNuke = type === UnitType.AtomBomb || type === UnitType.HydrogenBomb;
-    const fillColor = targetingAlly && isNuke ? 0xff6b35 : 0xffffff;
-    const fillAlpha = targetingAlly && isNuke ? 0.35 : 0.2;
-    const strokeColor = targetingAlly && isNuke ? 0xff4444 : 0xffffff;
-    const strokeAlpha = targetingAlly && isNuke ? 0.8 : 0.5;
-    const strokeWidth = targetingAlly && isNuke ? 2 : 1;
+    const isOilRig = type === UnitType.OilRig;
+    const fillColor = targetingAlly && isNuke ? 0xff6b35 : isOilRig ? 0xf0c24b : 0xffffff;
+    const fillAlpha = targetingAlly && isNuke ? 0.35 : isOilRig ? 0.12 : 0.2;
+    const strokeColor = targetingAlly && isNuke ? 0xff4444 : isOilRig ? 0xf4d03f : 0xffffff;
+    const strokeAlpha = targetingAlly && isNuke ? 0.8 : isOilRig ? 0.9 : 0.5;
+    const strokeWidth = targetingAlly && isNuke ? 2 : isOilRig ? 2 : 1;
 
     circle
       .circle(0, 0, radius)

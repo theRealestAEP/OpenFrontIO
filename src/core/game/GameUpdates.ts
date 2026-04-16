@@ -33,6 +33,7 @@ export interface GameUpdateViewData {
   packedMotionPlans?: Uint32Array;
   playerNameViewData: Record<string, NameViewData>;
   tickExecutionDuration?: number;
+  tickExecutionBreakdown?: Record<string, number>;
   pendingTurns?: number;
 }
 

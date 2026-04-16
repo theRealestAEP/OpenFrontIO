@@ -92,18 +92,18 @@ const DEFENSE_POST_DENSITY_THRESHOLD = 1 / 5000;
 const TILES_PER_CITY_EQUIVALENT = 2000;
 
 /** Oil-rig marginal value model mirrors OilExecution's per-second economy. */
-const OIL_GOLD_PER_UNIT = 1200;
+const OIL_GOLD_PER_UNIT = 120;
 const OIL_UNITS_PER_SECOND_BASE = 30;
 const OIL_MAX_PAYBACK_SECONDS = 180;
 const OIL_MIN_REMAINING_VALUE_MULTIPLIER = 2;
 const OIL_RIGS_PER_FIELD_TARGET = 2;
-const OIL_BUILD_CACHE_TTL_TICKS = 30;
 const MAX_OFFSHORE_CANDIDATES_PER_FIELD = 16;
 
 interface OilBuildCache {
   cachedAtTick: number;
   candidateTiles: TileRef[];
   lastTileChange: number;
+  portStateKey: string;
   reachableFieldCount: number;
 }
 
@@ -1225,10 +1225,11 @@ export class NationStructureBehavior {
       typeof this.player.lastTileChange === "function"
         ? this.player.lastTileChange()
         : -1;
+    const portStateKey = this.portStateKey();
     if (
       this.oilBuildCache !== null &&
       this.oilBuildCache.lastTileChange === lastTileChange &&
-      currentTick - this.oilBuildCache.cachedAtTick < OIL_BUILD_CACHE_TTL_TICKS
+      this.oilBuildCache.portStateKey === portStateKey
     ) {
       return this.oilBuildCache;
     }
@@ -1288,8 +1289,23 @@ export class NationStructureBehavior {
       cachedAtTick: currentTick,
       candidateTiles: Array.from(candidateTiles),
       lastTileChange,
+      portStateKey,
       reachableFieldCount: reachableFieldIds.size,
     };
     return this.oilBuildCache;
+  }
+
+  private portStateKey(): string {
+    return this.player
+      .units(UnitType.Port)
+      .map((port) =>
+        [
+          typeof port.id === "function" ? port.id() : port.tile(),
+          port.tile(),
+          port.isActive() ? 1 : 0,
+          port.isUnderConstruction() ? 1 : 0,
+        ].join(":"),
+      )
+      .join("|");
   }
 }

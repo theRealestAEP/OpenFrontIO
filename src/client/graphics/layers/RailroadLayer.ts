@@ -30,7 +30,6 @@ const SNAPPABLE_STRUCTURES: UnitType[] = [
   UnitType.Port,
   UnitType.City,
   UnitType.Factory,
-  UnitType.OilRig,
 ];
 export class RailTileChangedEvent implements GameEvent {
   constructor(public tile: TileRef) {}
@@ -255,8 +254,7 @@ export class RailroadLayer implements Layer {
   private renderGhostRailroads(context: CanvasRenderingContext2D) {
     if (
       this.uiState.ghostStructure !== UnitType.City &&
-      this.uiState.ghostStructure !== UnitType.Port &&
-      this.uiState.ghostStructure !== UnitType.OilRig
+      this.uiState.ghostStructure !== UnitType.Port
     )
       return;
     if (this.uiState.ghostRailPaths.length === 0) return;

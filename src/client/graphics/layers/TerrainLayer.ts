@@ -17,7 +17,7 @@ export class TerrainLayer implements Layer {
   private alternativeView = false;
   private lastOilReserves = new Map<number, number>();
   private oilOverlayDirty = true;
-  private wasRenderingOilOverlay = false;
+  private hasRenderedOilOverlay = false;
   private theme: Theme;
   private config: Config;
 
@@ -52,11 +52,10 @@ export class TerrainLayer implements Layer {
 
     if (
       shouldRenderOilOverlay &&
-      (this.oilOverlayDirty || !this.wasRenderingOilOverlay)
+      (this.oilOverlayDirty || !this.hasRenderedOilOverlay)
     ) {
       this.redrawOilOverlay();
     }
-    this.wasRenderingOilOverlay = shouldRenderOilOverlay;
 
     // Repaint terrain for tiles whose terrain changed (e.g. nuke
     // turning land to water).
@@ -119,11 +118,9 @@ export class TerrainLayer implements Layer {
     this.oilContext = oilContext;
 
     this.oilOverlayDirty = true;
+    this.hasRenderedOilOverlay = false;
     if (this.shouldRenderOilOverlay()) {
       this.redrawOilOverlay();
-      this.wasRenderingOilOverlay = true;
-    } else {
-      this.wasRenderingOilOverlay = false;
     }
   }
 
@@ -174,6 +171,7 @@ export class TerrainLayer implements Layer {
 
     this.oilContext.putImageData(imageData, 0, 0);
     this.oilOverlayDirty = false;
+    this.hasRenderedOilOverlay = true;
   }
 
   private shouldRenderOilOverlay(): boolean {

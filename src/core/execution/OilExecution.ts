@@ -9,26 +9,26 @@ import { TradeShipExecution } from "./TradeShipExecution";
 
 const OIL_TICKS_PER_SECOND = 10;
 const OIL_UNITS_PER_SECOND_BASE = 30;
-const OIL_GOLD_PER_UNIT = 1_200;
+const OIL_GOLD_PER_UNIT = 120;
 const OFFSHORE_CARGO_INTERVAL_TICKS = 100;
 
 export class OilExecution implements Execution {
   private active = true;
   private game!: Game;
   private readonly offshoreCargoBuffers = new Map<Unit, number>();
+  private readonly offshoreCargoInTransit = new Set<number>();
 
   init(mg: Game): void {
     this.game = mg;
   }
 
   tick(ticks: number): void {
-    this.pruneOffshoreCargoBuffers();
-
     if (ticks % OIL_TICKS_PER_SECOND === 0) {
       this.extractAndDistributeOil();
     }
 
     if (ticks % OFFSHORE_CARGO_INTERVAL_TICKS === 0) {
+      this.pruneOffshoreCargoState();
       this.launchOffshoreCargoShips();
     }
   }
@@ -95,17 +95,22 @@ export class OilExecution implements Execution {
         continue;
       }
 
-      const scale =
-        totalRequested > field.remainingReserve
-          ? field.remainingReserve / totalRequested
-          : 1;
+      // Finite-field scaling is intentionally disabled for the infinite-oil prototype.
+      // We still keep rigs grouped by field/owner so payout sharing stays the same, but
+      // we no longer clamp extraction to a shrinking reserve pool. If we want finite
+      // fields back later, restore the old `scale` calculation here and multiply
+      // `requested` by that scale before calling `extractOil()`.
+      // const scale =
+      //   totalRequested > field.remainingReserve
+      //     ? field.remainingReserve / totalRequested
+      //     : 1;
 
       for (const [owner, requested] of requestedByOwner) {
         const ownerData = owners.get(owner);
         if (!ownerData) {
           continue;
         }
-        const extracted = this.game.extractOil(fieldId, requested * scale);
+        const extracted = this.game.extractOil(fieldId, requested);
         if (extracted <= 0) {
           continue;
         }
@@ -169,6 +174,10 @@ export class OilExecution implements Execution {
         !isOffshoreOilRig(this.game, rig)
       ) {
         this.offshoreCargoBuffers.delete(rig);
+        this.offshoreCargoInTransit.delete(rig.id());
+        continue;
+      }
+      if (this.offshoreCargoInTransit.has(rig.id())) {
         continue;
       }
 
@@ -182,25 +191,31 @@ export class OilExecution implements Execution {
       }
 
       this.offshoreCargoBuffers.delete(rig);
+      this.offshoreCargoInTransit.add(rig.id());
       this.game.addExecution(
         new TradeShipExecution(rig.owner(), rig, dstPort, {
           cargoGold,
           cargoMode: "offshore_oil",
           cargoSourceTile: rig.tile(),
           onSpawnFailed: () => {
+            this.offshoreCargoInTransit.delete(rig.id());
             if (rig.isActive() && isOffshoreOilRig(this.game, rig)) {
               this.bufferOffshoreCargo(rig, cargoGold);
             }
+          },
+          onSettled: () => {
+            this.offshoreCargoInTransit.delete(rig.id());
           },
         }),
       );
     }
   }
 
-  private pruneOffshoreCargoBuffers(): void {
+  private pruneOffshoreCargoState(): void {
     for (const rig of Array.from(this.offshoreCargoBuffers.keys())) {
       if (!rig.isActive() || rig.type() !== UnitType.OilRig) {
         this.offshoreCargoBuffers.delete(rig);
+        this.offshoreCargoInTransit.delete(rig.id());
       }
     }
   }

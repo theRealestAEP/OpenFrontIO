@@ -21,6 +21,10 @@ export class OilRigExecution implements Execution {
     if (this.rig.isUnderConstruction()) {
       return;
     }
+    if (this.game.isOcean(this.rig.tile())) {
+      this.removeStation();
+      return;
+    }
 
     if (this.game.isOilRigActive(this.rig)) {
       this.ensureStation();

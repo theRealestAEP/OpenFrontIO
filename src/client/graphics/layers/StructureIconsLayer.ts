@@ -19,6 +19,7 @@ import { GameUpdateType } from "../../../core/game/GameUpdates";
 import { GameView, UnitView } from "../../../core/game/GameView";
 import {
   ConfirmGhostStructureEvent,
+  MouseOverEvent,
   GhostStructureChangedEvent,
   MouseMoveEvent,
   MouseUpEvent,
@@ -73,6 +74,7 @@ export class StructureIconsLayer implements Layer {
     priceGroup: PIXI.Container;
     priceBox: { height: number; y: number; paddingX: number; minWidth: number };
     range: PIXI.Container | null;
+    rangeType?: PlayerBuildableUnitType;
     rangeLevel?: number;
     targetingAlly?: boolean;
     buildableUnit: BuildableUnit;
@@ -101,6 +103,9 @@ export class StructureIconsLayer implements Layer {
   private visibilityStateDirty = true;
   private pendingConfirm: MouseUpEvent | null = null;
   private hasHiddenStructure = false;
+  private lastGhostTileRef: TileRef | null = null;
+  private lastGhostType: PlayerBuildableUnitType | null = null;
+  private ghostQueryVersion = 0;
   potentialUpgrade: StructureRenderInfo | undefined;
 
   constructor(
@@ -178,6 +183,7 @@ export class StructureIconsLayer implements Layer {
       this.toggleStructures(e.structureTypes),
     );
     this.eventBus.on(MouseMoveEvent, (e) => this.moveGhost(e));
+    this.eventBus.on(MouseOverEvent, (e) => this.moveGhost(e));
 
     this.eventBus.on(MouseUpEvent, (e) => this.requestConfirmStructure(e));
     this.eventBus.on(ConfirmGhostStructureEvent, () =>
@@ -261,11 +267,7 @@ export class StructureIconsLayer implements Layer {
   renderGhost() {
     if (!this.ghostUnit) return;
 
-    const now = performance.now();
-    if (now - this.lastGhostQueryAt < 50) {
-      return;
-    }
-    this.lastGhostQueryAt = now;
+    const ghostType = this.ghostUnit.buildableUnit.type;
     let tileRef: TileRef | undefined;
     const tile = this.transformHandler.screenToWorldCoordinates(
       this.mousePos.x,
@@ -275,11 +277,23 @@ export class StructureIconsLayer implements Layer {
       tileRef = this.game.ref(tile.x, tile.y);
     }
 
+    const now = performance.now();
+    const tileChanged =
+      (tileRef ?? null) !== this.lastGhostTileRef || ghostType !== this.lastGhostType;
+    const refreshInterval = tileChanged ? 50 : 250;
+    if (now - this.lastGhostQueryAt < refreshInterval) {
+      return;
+    }
+    this.lastGhostQueryAt = now;
+    this.lastGhostTileRef = tileRef ?? null;
+    this.lastGhostType = ghostType;
+    const queryVersion = ++this.ghostQueryVersion;
+
     // Check if targeting an ally (for nuke warning visual)
     // Uses shared logic with NukeExecution.maybeBreakAlliances()
     let targetingAlly = false;
     const myPlayer = this.game.myPlayer();
-    const nukeType = this.ghostUnit.buildableUnit.type;
+    const nukeType = ghostType;
     if (
       tileRef &&
       myPlayer &&
@@ -308,8 +322,16 @@ export class StructureIconsLayer implements Layer {
 
     this.game
       ?.myPlayer()
-      ?.buildables(tileRef, [this.ghostUnit?.buildableUnit.type])
+      ?.buildables(tileRef, [ghostType])
       .then((buildables) => {
+        if (
+          queryVersion !== this.ghostQueryVersion ||
+          !this.ghostUnit ||
+          this.ghostUnit.buildableUnit.type !== ghostType
+        ) {
+          return;
+        }
+
         if (this.potentialUpgrade) {
           this.potentialUpgrade.iconContainer.filters = [];
           this.potentialUpgrade.dotContainer.filters = [];
@@ -455,7 +477,6 @@ export class StructureIconsLayer implements Layer {
       this.removeGhostStructure();
       return;
     }
-    const tile = this.transformHandler.screenToWorldCoordinates(e.x, e.y);
     if (this.ghostUnit.buildableUnit.canUpgrade !== false) {
       this.eventBus.emit(
         new SendUpgradeStructureIntentEvent(
@@ -466,6 +487,7 @@ export class StructureIconsLayer implements Layer {
       this.removeGhostStructure();
     } else if (this.ghostUnit.buildableUnit.canBuild) {
       const unitType = this.ghostUnit.buildableUnit.type;
+      const targetTile = this.ghostUnit.buildableUnit.canBuild;
       const rocketDirectionUp =
         unitType === UnitType.AtomBomb || unitType === UnitType.HydrogenBomb
           ? this.uiState.rocketDirectionUp
@@ -473,7 +495,7 @@ export class StructureIconsLayer implements Layer {
       this.eventBus.emit(
         new BuildUnitIntentEvent(
           unitType,
-          this.game.ref(tile.x, tile.y),
+          targetTile,
           rocketDirectionUp,
         ),
       );
@@ -535,6 +557,9 @@ export class StructureIconsLayer implements Layer {
 
   private clearGhostStructure() {
     this.pendingConfirm = null;
+    this.lastGhostTileRef = null;
+    this.lastGhostType = null;
+    this.ghostQueryVersion++;
     if (this.ghostUnit) {
       this.ghostUnit.container.destroy();
       this.ghostUnit.range?.destroy();
@@ -580,6 +605,7 @@ export class StructureIconsLayer implements Layer {
 
     if (
       this.ghostUnit.range &&
+      this.ghostUnit.rangeType === this.ghostUnit.buildableUnit.type &&
       this.ghostUnit.rangeLevel === level &&
       this.ghostUnit.targetingAlly === targetingAlly
     ) {
@@ -588,6 +614,7 @@ export class StructureIconsLayer implements Layer {
 
     this.ghostUnit.range?.destroy();
     this.ghostUnit.range = null;
+    this.ghostUnit.rangeType = this.ghostUnit.buildableUnit.type;
     this.ghostUnit.rangeLevel = level;
     this.ghostUnit.targetingAlly = targetingAlly;
 

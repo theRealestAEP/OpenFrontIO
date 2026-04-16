@@ -41,7 +41,6 @@ import { GameMap, TileRef } from "./GameMap";
 import { GameUpdate, GameUpdateType } from "./GameUpdates";
 import { MotionPlanRecord, packMotionPlans } from "./MotionPlans";
 import { OilFieldManager } from "./OilField";
-import { isOffshoreOilRigServiced } from "./OilRigUtils";
 import { PlayerImpl } from "./PlayerImpl";
 import { RailNetwork } from "./RailNetwork";
 import { createRailNetwork } from "./RailNetworkImpl";
@@ -112,6 +111,8 @@ export class GameImpl implements Game {
   private _teamGameSpawnAreas: TeamGameSpawnAreas | undefined;
   private _oilFieldManager: OilFieldManager;
   private lastOilFieldReserves = new Map<number, number>();
+  private activePortComponentsByOwner = new Map<number, Set<number>>();
+  private lastTickExecutionBreakdown: Record<string, number> | null = null;
 
   constructor(
     private _humans: PlayerInfo[],
@@ -250,6 +251,12 @@ export class GameImpl implements Game {
   }
 
   addUpdate(update: GameUpdate) {
+    if (update.type === GameUpdateType.Unit && update.unitType === UnitType.Port) {
+      this.activePortComponentsByOwner.delete(update.ownerID);
+      if (update.lastOwnerID !== undefined) {
+        this.activePortComponentsByOwner.delete(update.lastOwnerID);
+      }
+    }
     (this.updates[update.type] as GameUpdate[]).push(update);
   }
 
@@ -280,6 +287,7 @@ export class GameImpl implements Game {
       this._map.setFallout(tile, false);
     }
     this._map.setWater(tile);
+    this.activePortComponentsByOwner.clear();
     this.recordTileUpdate(tile);
   }
 
@@ -421,24 +429,39 @@ export class GameImpl implements Game {
   executeNextTick(): GameUpdates {
     this.updates = createGameUpdatesMap();
     this.tileUpdatePairs.length = 0;
+    const executionBreakdown: Record<string, number> = {};
     this.execs.forEach((e) => {
       if (
         (!this.inSpawnPhase() || e.activeDuringSpawnPhase()) &&
         e.isActive()
       ) {
+        const start = performance.now();
         e.tick(this._ticks);
+        this.recordExecutionTiming(
+          executionBreakdown,
+          e.constructor?.name ?? "AnonymousExecution",
+          performance.now() - start,
+        );
       }
     });
     const inited: Execution[] = [];
     const unInited: Execution[] = [];
     this.unInitExecs.forEach((e) => {
       if (!this.inSpawnPhase() || e.activeDuringSpawnPhase()) {
+        const start = performance.now();
         e.init(this, this._ticks);
+        this.recordExecutionTiming(
+          executionBreakdown,
+          e.constructor?.name ?? "AnonymousExecution",
+          performance.now() - start,
+        );
         inited.push(e);
       } else {
         unInited.push(e);
       }
     });
+    this.lastTickExecutionBreakdown =
+      Object.keys(executionBreakdown).length > 0 ? executionBreakdown : null;
 
     this.removeInactiveExecutions();
 
@@ -479,6 +502,20 @@ export class GameImpl implements Game {
     }
     this._ticks++;
     return this.updates;
+  }
+
+  consumeTickExecutionBreakdown(): Record<string, number> | undefined {
+    const breakdown = this.lastTickExecutionBreakdown ?? undefined;
+    this.lastTickExecutionBreakdown = null;
+    return breakdown;
+  }
+
+  private recordExecutionTiming(
+    timings: Record<string, number>,
+    name: string,
+    durationMs: number,
+  ): void {
+    timings[name] = (timings[name] ?? 0) + durationMs;
   }
 
   private recordTileUpdate(tile: TileRef): void {
@@ -1207,7 +1244,11 @@ export class GameImpl implements Game {
     if (!this.isOcean(unit.tile())) {
       return true;
     }
-    return isOffshoreOilRigServiced(this, unit);
+    const rigComponent = this.getWaterComponent(unit.tile());
+    if (rigComponent === null) {
+      return false;
+    }
+    return this.activePortComponents(unit.owner()).has(rigComponent);
   }
   extractOil(fieldId: number, amount: number): number {
     return this._oilFieldManager.extract(fieldId, amount);
@@ -1226,6 +1267,28 @@ export class GameImpl implements Game {
   }
   hasWaterComponent(tile: TileRef, component: number): boolean {
     return this._waterManager.hasWaterComponent(tile, component);
+  }
+
+  private activePortComponents(owner: Player): Set<number> {
+    const ownerId = owner.smallID();
+    const cached = this.activePortComponentsByOwner.get(ownerId);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const components = new Set<number>();
+    for (const port of owner.units(UnitType.Port)) {
+      if (!port.isActive() || port.isUnderConstruction()) {
+        continue;
+      }
+      const component = this.getWaterComponent(port.tile());
+      if (component !== null) {
+        components.add(component);
+      }
+    }
+
+    this.activePortComponentsByOwner.set(ownerId, components);
+    return components;
   }
   conquerPlayer(conqueror: Player, conquered: Player) {
     if (conquered.isDisconnected() && conqueror.isOnSameTeam(conquered)) {

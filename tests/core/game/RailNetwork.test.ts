@@ -211,7 +211,7 @@ describe("RailNetworkImpl", () => {
       expect(pathService.findTilePath).toHaveBeenCalledWith(tile, 100);
     });
 
-    test("treats OilRig as a snappable rail stop", () => {
+    test("does not compute rail ghost paths for OilRig", () => {
       const tile = 42 as any;
       const railGridMock = { query: vi.fn(() => new Set()) };
       (network as any).railGrid = railGridMock;
@@ -228,7 +228,7 @@ describe("RailNetworkImpl", () => {
       ]);
 
       const result = network.computeGhostRailPaths(UnitType.OilRig, tile);
-      expect(result).toEqual([mockPath]);
+      expect(result).toEqual([]);
     });
 
     test("skips neighbors within min range", () => {

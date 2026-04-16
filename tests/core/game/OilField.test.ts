@@ -9,12 +9,13 @@ import {
   UnitType,
 } from "../../../src/core/game/Game";
 import { TileRef } from "../../../src/core/game/GameMap";
+import { oilRigPlacementMinDist } from "../../../src/core/game/OilRigUtils";
 import { GameConfig } from "../../../src/core/Schemas";
 import { setup } from "../../util/Setup";
 import { executeTicks } from "../../util/utils";
 
 async function createOilGame(
-  mapName = "plains",
+  mapName = "half_land_half_ocean",
   gameConfig: Partial<GameConfig> = {},
   players = [new PlayerInfo("player", PlayerType.Human, null, "player_id")],
 ): Promise<{ game: Game; players: Player[] }> {
@@ -35,17 +36,16 @@ async function createOilGame(
   return { game, players: resolvedPlayers };
 }
 
-function firstActiveLandOilTile(game: Game): TileRef {
-  for (const field of game.oilFields()) {
-    if (field.remainingReserve <= 0) {
-      continue;
-    }
-    const tile = field.tiles.find((candidate) => game.isLand(candidate));
-    if (tile !== undefined) {
-      return tile;
+function firstLandTile(game: Game): TileRef {
+  for (let y = 0; y < game.height(); y++) {
+    for (let x = 0; x < game.width(); x++) {
+      const tile = game.ref(x, y);
+      if (game.isLand(tile)) {
+        return tile;
+      }
     }
   }
-  throw new Error("Expected at least one land oil tile on the test map");
+  throw new Error("Expected at least one land tile on the test map");
 }
 
 function firstActiveOceanOilTile(game: Game): TileRef {
@@ -65,7 +65,7 @@ function nearbyOceanOilTileWithinSpacing(
   game: Game,
   origin: TileRef,
 ): TileRef | null {
-  const maxDistSquared = game.config().structureMinDist() ** 2;
+  const maxDistSquared = oilRigPlacementMinDist(game) ** 2;
   const field = game.oilFieldAt(origin);
   if (field === null) {
     return null;
@@ -82,28 +82,6 @@ function nearbyOceanOilTileWithinSpacing(
   }
 
   return null;
-}
-
-function firstMixedOilFieldTiles(game: Game): {
-  fieldId: number;
-  landTile: TileRef;
-  oceanTile: TileRef;
-} {
-  for (const field of game.oilFields()) {
-    if (field.remainingReserve <= 0) {
-      continue;
-    }
-    const landTile = field.tiles.find((tile) => game.isLand(tile));
-    const oceanTile = field.tiles.find((tile) => game.isOcean(tile));
-    if (landTile !== undefined && oceanTile !== undefined) {
-      return {
-        fieldId: field.id,
-        landTile,
-        oceanTile,
-      };
-    }
-  }
-  throw new Error("Expected at least one mixed land/ocean oil field");
 }
 
 function overlappingFieldsAt(game: Game, tile: TileRef) {
@@ -141,8 +119,15 @@ function buildReachablePort(
   player: Player,
   oceanTile: TileRef,
   index = 0,
+  blockedTiles: TileRef[] = [],
 ) {
-  const candidates = reachablePortTiles(game, oceanTile);
+  const minDistSquared = game.config().structureMinDist() ** 2;
+  const candidates = reachablePortTiles(game, oceanTile).filter((tile) =>
+    blockedTiles.every(
+      (blockedTile) =>
+        game.euclideanDistSquared(tile, blockedTile) >= minDistSquared,
+    ),
+  );
   const tile = candidates[index];
   if (tile === undefined) {
     throw new Error(
@@ -159,27 +144,6 @@ function ticksUntilNextCargoLaunch(game: Game): number {
   return remainder === 0 ? 100 : 100 - remainder;
 }
 
-function ticksUntilNextOilTick(game: Game): number {
-  const remainder = game.ticks() % 10;
-  return remainder === 0 ? 10 : 10 - remainder;
-}
-
-function runUntilWithTicks(
-  game: Game,
-  predicate: () => boolean,
-  maxTicks = 200,
-): number {
-  let elapsed = 0;
-  for (; elapsed < maxTicks; elapsed++) {
-    if (predicate()) {
-      return elapsed;
-    }
-    game.executeNextTick();
-  }
-
-  throw new Error("Condition was not reached before maxTicks elapsed");
-}
-
 function firstTradeShip(player: Player) {
   return player.units(UnitType.TradeShip)[0];
 }
@@ -191,6 +155,43 @@ function nearbyOceanTile(game: Game, tile: TileRef): TileRef {
     }
   }
   throw new Error("Expected an adjacent ocean tile");
+}
+
+function nearbyNonOilOceanTile(
+  game: Game,
+  searchRadius = 3,
+): { oilTile: TileRef; nearbyTile: TileRef } | null {
+  for (const field of game.oilFields()) {
+    for (const oilTile of field.tiles) {
+      if (!game.isOcean(oilTile)) {
+        continue;
+      }
+
+      const originX = game.x(oilTile);
+      const originY = game.y(oilTile);
+      for (let dy = -searchRadius; dy <= searchRadius; dy++) {
+        for (let dx = -searchRadius; dx <= searchRadius; dx++) {
+          const distSquared = dx ** 2 + dy ** 2;
+          if (distSquared === 0 || distSquared > searchRadius ** 2) {
+            continue;
+          }
+
+          const x = originX + dx;
+          const y = originY + dy;
+          if (!game.isValidCoord(x, y)) {
+            continue;
+          }
+
+          const nearbyTile = game.ref(x, y);
+          if (game.isOcean(nearbyTile) && game.oilFieldAt(nearbyTile) === null) {
+            return { oilTile, nearbyTile };
+          }
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 function runUntil(game: Game, predicate: () => boolean, maxTicks = 200): void {
@@ -206,21 +207,6 @@ function runUntil(game: Game, predicate: () => boolean, maxTicks = 200): void {
 
 describe("Oil fields", () => {
   test("generates deterministic fixed-footprint fields for the same map", async () => {
-    const gameA = await setup("plains");
-    const gameB = await setup("plains");
-
-    const normalize = (game: Game) =>
-      game.oilFields().map((field) => ({
-        id: field.id,
-        center: field.center,
-        maxReserve: field.maxReserve,
-        tiles: [...field.tiles],
-      }));
-
-    expect(normalize(gameA)).toEqual(normalize(gameB));
-  });
-
-  test("extends deterministic mixed oil fields into ocean tiles", async () => {
     const gameA = await setup("half_land_half_ocean");
     const gameB = await setup("half_land_half_ocean");
 
@@ -233,42 +219,34 @@ describe("Oil fields", () => {
       }));
 
     expect(normalize(gameA)).toEqual(normalize(gameB));
+  });
+
+  test("generates offshore-only oil fields on ocean tiles", async () => {
+    const game = await setup("half_land_half_ocean");
+
+    expect(game.oilFields().length).toBeGreaterThan(0);
     expect(
-      gameA.oilFields().some((field) => {
-        const hasLand = field.tiles.some((tile) => gameA.isLand(tile));
-        const hasOcean = field.tiles.some((tile) => gameA.isOcean(tile));
-        return hasLand && hasOcean;
-      }),
+      game.oilFields().every(
+        (field) =>
+          game.isOcean(field.center) &&
+          field.tiles.length > 0 &&
+          field.tiles.every((tile) => game.isOcean(tile)),
+      ),
     ).toBe(true);
   });
 
-  test("allows land OilRig builds only on owned fields with remaining oil", async () => {
+  test("rejects land OilRig builds even on owned land tiles", async () => {
     const {
       game,
       players: [player],
-    } = await createOilGame();
-    const oilTile = firstActiveLandOilTile(game);
+    } = await createOilGame("half_land_half_ocean", { instantBuild: true });
+    const landTile = firstLandTile(game);
 
-    const unownedBuildable = player.buildableUnits(oilTile, [
-      UnitType.OilRig,
-    ])[0];
-    expect(unownedBuildable?.canBuild).toBe(false);
+    player.conquer(landTile);
 
-    player.conquer(oilTile);
-
-    const activeBuildable = player.buildableUnits(oilTile, [
-      UnitType.OilRig,
-    ])[0];
-    expect(activeBuildable?.canBuild).not.toBe(false);
-
-    for (const overlappingField of overlappingFieldsAt(game, oilTile)) {
-      game.extractOil(overlappingField.id, overlappingField.remainingReserve);
-    }
-
-    const depletedBuildable = player.buildableUnits(oilTile, [
-      UnitType.OilRig,
-    ])[0];
-    expect(depletedBuildable?.canBuild).toBe(false);
+    const buildable = player.buildableUnits(landTile, [UnitType.OilRig])[0];
+    expect(buildable?.canBuild).toBe(false);
+    expect(player.canBuild(UnitType.OilRig, landTile)).toBe(false);
   });
 
   test("requires a reachable owned port before offshore OilRig placement is allowed", async () => {
@@ -283,6 +261,24 @@ describe("Oil fields", () => {
     buildReachablePort(game, player, oceanTile);
 
     expect(player.canBuild(UnitType.OilRig, oceanTile)).toBe(oceanTile);
+  });
+
+  test("does not snap offshore OilRig placement from nearby water", async () => {
+    const {
+      game,
+      players: [player],
+    } = await createOilGame("world", { instantBuild: true });
+    const candidate = nearbyNonOilOceanTile(game);
+
+    if (candidate === null) {
+      throw new Error("Expected a nearby non-oil ocean tile");
+    }
+
+    buildReachablePort(game, player, candidate.oilTile);
+
+    const buildTarget = player.canBuild(UnitType.OilRig, candidate.nearbyTile);
+
+    expect(buildTarget).toBe(false);
   });
 
   test("rejects blocked offshore OilRig placement even with a reachable port", async () => {
@@ -383,12 +379,17 @@ describe("Oil fields", () => {
     expect(player.units(UnitType.OilRigShip)).toHaveLength(1);
   });
 
-  test("still finishes offshore construction as a dormant rig if the field depletes during travel", async () => {
+  test("manual extraction no longer depletes offshore fields during deployment", async () => {
     const {
       game,
       players: [player],
     } = await createOilGame("half_land_half_ocean", { instantBuild: true });
     const oceanTile = firstActiveOceanOilTile(game);
+    const fieldId = game.oilFieldAt(oceanTile)?.id;
+
+    if (fieldId === undefined) {
+      throw new Error("Expected oil field for selected offshore oil tile");
+    }
 
     buildReachablePort(game, player, oceanTile);
 
@@ -397,9 +398,9 @@ describe("Oil fields", () => {
     );
     runUntil(game, () => player.units(UnitType.OilRigShip).length === 1);
 
-    for (const overlappingField of overlappingFieldsAt(game, oceanTile)) {
-      game.extractOil(overlappingField.id, overlappingField.remainingReserve);
-    }
+    const reserveBefore = game.oilFieldById(fieldId)?.remainingReserve ?? 0;
+    game.extractOil(fieldId, reserveBefore * 10);
+    expect(game.oilFieldById(fieldId)?.remainingReserve).toBe(reserveBefore);
 
     runUntil(game, () =>
       player.units(UnitType.OilRig).some((rig) => rig.tile() === oceanTile),
@@ -409,52 +410,43 @@ describe("Oil fields", () => {
       .units(UnitType.OilRig)
       .find((candidate) => candidate.tile() === oceanTile);
     expect(rig).toBeDefined();
-    expect(game.isOilRigActive(rig!)).toBe(false);
+
+    executeTicks(
+      game,
+      (game.config().unitInfo(UnitType.OilRig).constructionDuration ?? 0) + 2,
+    );
+
+    expect(game.oilFieldById(fieldId)?.remainingReserve).toBe(reserveBefore);
+    expect(game.isOilRigActive(rig!)).toBe(true);
   });
 
-  test("pays passive gold while reserves remain and goes dormant after depletion", async () => {
+  test("offshore rigs keep producing without draining reserve", async () => {
     const {
       game,
       players: [player],
-    } = await createOilGame();
-    const oilTile = firstActiveLandOilTile(game);
-    const field = game.oilFieldAt(oilTile);
+    } = await createOilGame("half_land_half_ocean", { instantBuild: true });
+    const oceanTile = firstActiveOceanOilTile(game);
+    const field = game.oilFieldAt(oceanTile);
 
     if (!field) {
       throw new Error("Expected oil field for selected oil tile");
     }
 
-    player.conquer(oilTile);
-    const rig = player.buildUnit(UnitType.OilRig, oilTile, {});
-
-    const goldBefore = player.gold();
+    buildReachablePort(game, player, oceanTile);
+    const rig = player.buildUnit(UnitType.OilRig, oceanTile, {});
     const reserveBefore = game.oilFieldById(field.id)?.remainingReserve ?? 0;
+    const goldBefore = player.gold();
 
-    for (let i = 0; i < 12; i++) {
-      game.executeNextTick();
-    }
+    executeTicks(game, 10);
 
     const reserveAfterTick = game.oilFieldById(field.id)?.remainingReserve ?? 0;
-    expect(player.gold()).toBeGreaterThan(goldBefore);
-    expect(reserveAfterTick).toBeLessThan(reserveBefore);
+    expect(player.gold()).toBe(goldBefore);
+    expect(reserveAfterTick).toBe(reserveBefore);
     expect(game.isOilRigActive(rig)).toBe(true);
-
-    for (const overlappingField of overlappingFieldsAt(game, oilTile)) {
-      const remaining =
-        game.oilFieldById(overlappingField.id)?.remainingReserve ?? 0;
-      game.extractOil(overlappingField.id, remaining);
-    }
-    game.executeNextTick();
-
-    const goldAfterDepletion = player.gold();
-    expect(game.oilFieldById(field.id)?.remainingReserve).toBe(0);
-    expect(game.isOilRigActive(rig)).toBe(false);
-
-    game.executeNextTick();
-    expect(player.gold()).toBe(goldAfterDepletion);
+    expect(player.units(UnitType.TradeShip)).toHaveLength(0);
   });
 
-  test("offshore rigs launch cargo ships on a 100 tick interval and pay on delivery", async () => {
+  test("offshore rigs launch buffered cargo ships and pay on delivery", async () => {
     const {
       game,
       players: [player],
@@ -465,20 +457,22 @@ describe("Oil fields", () => {
     player.buildUnit(UnitType.OilRig, oceanTile, {});
 
     const goldBefore = player.gold();
-    const ticksBeforeLaunch = ticksUntilNextCargoLaunch(game);
 
-    executeTicks(game, Math.max(0, ticksBeforeLaunch - 1));
-    expect(player.units(UnitType.TradeShip)).toHaveLength(0);
+    executeTicks(game, 9);
     expect(player.gold()).toBe(goldBefore);
+    expect(player.units(UnitType.TradeShip)).toHaveLength(0);
 
     executeTicks(game, 1);
+    expect(player.gold()).toBe(goldBefore);
+
+    executeTicks(game, ticksUntilNextCargoLaunch(game));
     runUntil(game, () => player.units(UnitType.TradeShip).length === 1, 5);
 
     runUntil(game, () => player.gold() > goldBefore, 300);
     expect(player.gold()).toBeGreaterThan(goldBefore);
   });
 
-  test("offshore rigs become inert without a reachable port and stop draining reserve", async () => {
+  test("offshore rigs become inert without a reachable port and stop generating gold", async () => {
     const {
       game,
       players: [player],
@@ -501,14 +495,14 @@ describe("Oil fields", () => {
 
     expect(game.isOilRigActive(rig)).toBe(false);
 
-    executeTicks(game, 20);
+    executeTicks(game, ticksUntilNextCargoLaunch(game) + 20);
 
     expect(game.oilFieldById(fieldId)?.remainingReserve).toBe(reserveBefore);
     expect(player.gold()).toBe(goldBefore);
     expect(player.units(UnitType.TradeShip)).toHaveLength(0);
   });
 
-  test("buffered offshore cargo survives a port outage and launches once service returns", async () => {
+  test("offshore rigs stop during a port outage and resume cargo launches once service returns", async () => {
     const {
       game,
       players: [player],
@@ -523,26 +517,28 @@ describe("Oil fields", () => {
     const port = buildReachablePort(game, player, oceanTile);
     player.buildUnit(UnitType.OilRig, oceanTile, {});
 
-    executeTicks(game, 20);
+    executeTicks(game, 10);
     const reserveAtOutage = game.oilFieldById(fieldId)?.remainingReserve ?? 0;
 
     port.delete(false);
-    executeTicks(game, Math.max(0, ticksUntilNextCargoLaunch(game) - 1));
+    const goldBeforeOutage = player.gold();
+    executeTicks(game, ticksUntilNextCargoLaunch(game) + 20);
 
     expect(player.units(UnitType.TradeShip)).toHaveLength(0);
     expect(game.oilFieldById(fieldId)?.remainingReserve).toBe(reserveAtOutage);
+    expect(player.gold()).toBe(goldBeforeOutage);
 
     player.buildUnit(UnitType.Port, port.tile(), {});
-    const goldBeforeDelivery = player.gold();
+    const goldBeforeRecovery = player.gold();
 
-    executeTicks(game, 1);
+    executeTicks(game, ticksUntilNextCargoLaunch(game));
     runUntil(game, () => player.units(UnitType.TradeShip).length === 1, 5);
-    runUntil(game, () => player.gold() > goldBeforeDelivery, 300);
+    runUntil(game, () => player.gold() > goldBeforeRecovery, 300);
 
-    expect(player.gold() - goldBeforeDelivery).toBeGreaterThan(50_000n);
+    expect(player.gold()).toBeGreaterThan(goldBeforeRecovery);
   });
 
-  test("offshore cargo ships choose the nearest reachable owned port and reroute if needed", async () => {
+  test("offshore rigs keep paying while any reachable owned port remains", async () => {
     const {
       game,
       players: [player],
@@ -559,6 +555,7 @@ describe("Oil fields", () => {
     );
     player.buildUnit(UnitType.OilRig, oceanTile, {});
 
+    const goldBeforeFallback = player.gold();
     executeTicks(game, ticksUntilNextCargoLaunch(game));
     runUntil(game, () => player.units(UnitType.TradeShip).length === 1, 5);
 
@@ -566,164 +563,57 @@ describe("Oil fields", () => {
     expect(ship?.targetUnit()).toBe(nearPort);
 
     nearPort.delete(false);
-    runUntil(game, () => firstTradeShip(player)?.targetUnit() === farPort, 10);
+    runUntil(game, () => firstTradeShip(player)?.targetUnit() === farPort, 20);
+    runUntil(game, () => player.gold() > goldBeforeFallback, 300);
 
-    expect(firstTradeShip(player)?.targetUnit()).toBe(farPort);
+    expect(player.gold()).toBeGreaterThan(goldBeforeFallback);
+    expect(farPort.isActive()).toBe(true);
+    expect(player.units(UnitType.TradeShip).length).toBeLessThanOrEqual(1);
   });
 
-  test("offshore cargo ships are deleted if no valid owned port remains during transit", async () => {
+  test("offshore rigs keep at most one cargo ship in flight per rig", async () => {
+    const {
+      game,
+      players: [player],
+    } = await createOilGame("half_land_half_ocean", { instantBuild: true });
+    const oceanTile = firstActiveOceanOilTile(game);
+    const portTiles = reachablePortTiles(game, oceanTile);
+
+    buildReachablePort(game, player, oceanTile, portTiles.length - 1);
+    player.buildUnit(UnitType.OilRig, oceanTile, {});
+
+    let maxTradeShips = 0;
+    for (let i = 0; i < 350; i++) {
+      game.executeNextTick();
+      maxTradeShips = Math.max(
+        maxTradeShips,
+        player.units(UnitType.TradeShip).length,
+      );
+    }
+
+    expect(maxTradeShips).toBe(1);
+    expect(player.gold()).toBeGreaterThan(0n);
+  });
+
+  test("offshore rigs pay at a much lower steady rate", async () => {
     const {
       game,
       players: [player],
     } = await createOilGame("half_land_half_ocean", { instantBuild: true });
     const oceanTile = firstActiveOceanOilTile(game);
 
-    const nearPort = buildReachablePort(game, player, oceanTile, 0);
-    const farPort = buildReachablePort(
-      game,
-      player,
-      oceanTile,
-      reachablePortTiles(game, oceanTile).length - 1,
-    );
+    buildReachablePort(game, player, oceanTile);
     player.buildUnit(UnitType.OilRig, oceanTile, {});
 
-    executeTicks(game, ticksUntilNextCargoLaunch(game));
-    runUntil(game, () => player.units(UnitType.TradeShip).length === 1, 5);
-
     const goldBefore = player.gold();
-    nearPort.delete(false);
-    farPort.delete(false);
 
-    runUntil(game, () => player.units(UnitType.TradeShip).length === 0, 20);
+    runUntil(game, () => player.units(UnitType.TradeShip).length === 1, 150);
+    runUntil(game, () => player.gold() > goldBefore, 300);
 
-    expect(player.gold()).toBe(goldBefore);
-  });
+    const earned = player.gold() - goldBefore;
 
-  test("offshore rigs drain and earn faster than equivalent land rigs", async () => {
-    const {
-      game: landGame,
-      players: [landPlayer],
-    } = await createOilGame("half_land_half_ocean", { instantBuild: true });
-    const {
-      game: oceanGame,
-      players: [oceanPlayer],
-    } = await createOilGame("half_land_half_ocean", { instantBuild: true });
-    const { fieldId, landTile, oceanTile } = firstMixedOilFieldTiles(landGame);
-
-    landPlayer.conquer(landTile);
-    landPlayer.buildUnit(UnitType.OilRig, landTile, {});
-
-    buildReachablePort(oceanGame, oceanPlayer, oceanTile);
-    oceanPlayer.buildUnit(UnitType.OilRig, oceanTile, {});
-
-    const landGoldBefore = landPlayer.gold();
-    const oceanGoldBefore = oceanPlayer.gold();
-    const landReserveBefore =
-      landGame.oilFieldById(fieldId)?.remainingReserve ?? 0;
-    const oceanReserveBefore =
-      oceanGame.oilFieldById(fieldId)?.remainingReserve ?? 0;
-
-    executeTicks(landGame, 10);
-    executeTicks(oceanGame, 10);
-
-    const landReserveAfter =
-      landGame.oilFieldById(fieldId)?.remainingReserve ?? 0;
-    const oceanReserveAfter =
-      oceanGame.oilFieldById(fieldId)?.remainingReserve ?? 0;
-
-    expect(oceanReserveBefore - oceanReserveAfter).toBeGreaterThan(
-      landReserveBefore - landReserveAfter,
-    );
-
-    const extraTicks = runUntilWithTicks(
-      oceanGame,
-      () => oceanPlayer.gold() > oceanGoldBefore,
-      400,
-    );
-    executeTicks(landGame, extraTicks);
-
-    expect(oceanPlayer.gold() - oceanGoldBefore).toBeGreaterThan(
-      landPlayer.gold() - landGoldBefore,
-    );
-  });
-
-  test("land and offshore rigs on the same field share reserves and one owner bucket", async () => {
-    const {
-      game: sharedGame,
-      players: [sharedPlayer],
-    } = await createOilGame("half_land_half_ocean", { instantBuild: true });
-    const {
-      game: landOnlyGame,
-      players: [landOnlyPlayer],
-    } = await createOilGame("half_land_half_ocean", { instantBuild: true });
-    const {
-      game: offshoreOnlyGame,
-      players: [offshoreOnlyPlayer],
-    } = await createOilGame("half_land_half_ocean", { instantBuild: true });
-
-    const sharedTiles = firstMixedOilFieldTiles(sharedGame);
-    const landOnlyTiles = firstMixedOilFieldTiles(landOnlyGame);
-    const offshoreOnlyTiles = firstMixedOilFieldTiles(offshoreOnlyGame);
-
-    sharedPlayer.conquer(sharedTiles.landTile);
-    sharedPlayer.buildUnit(UnitType.OilRig, sharedTiles.landTile, {});
-    buildReachablePort(sharedGame, sharedPlayer, sharedTiles.oceanTile);
-    sharedPlayer.buildUnit(UnitType.OilRig, sharedTiles.oceanTile, {});
-
-    landOnlyPlayer.conquer(landOnlyTiles.landTile);
-    landOnlyPlayer.buildUnit(UnitType.OilRig, landOnlyTiles.landTile, {});
-
-    buildReachablePort(
-      offshoreOnlyGame,
-      offshoreOnlyPlayer,
-      offshoreOnlyTiles.oceanTile,
-    );
-    offshoreOnlyPlayer.buildUnit(
-      UnitType.OilRig,
-      offshoreOnlyTiles.oceanTile,
-      {},
-    );
-
-    const sharedFieldId = sharedGame.oilFieldAt(sharedTiles.landTile)?.id;
-    const landOnlyFieldId = landOnlyGame.oilFieldAt(landOnlyTiles.landTile)?.id;
-    const offshoreOnlyFieldId = offshoreOnlyGame.oilFieldAt(
-      offshoreOnlyTiles.oceanTile,
-    )?.id;
-
-    if (
-      sharedFieldId === undefined ||
-      landOnlyFieldId === undefined ||
-      offshoreOnlyFieldId === undefined
-    ) {
-      throw new Error("Expected active oil fields for shared reserve test");
-    }
-
-    const sharedReserveBefore =
-      sharedGame.oilFieldById(sharedFieldId)?.remainingReserve ?? 0;
-    const landOnlyReserveBefore =
-      landOnlyGame.oilFieldById(landOnlyFieldId)?.remainingReserve ?? 0;
-    const offshoreOnlyReserveBefore =
-      offshoreOnlyGame.oilFieldById(offshoreOnlyFieldId)?.remainingReserve ?? 0;
-
-    const sharedGoldBefore = sharedPlayer.gold();
-    executeTicks(sharedGame, 10);
-    executeTicks(landOnlyGame, 10);
-    executeTicks(offshoreOnlyGame, 10);
-
-    const sharedDrain =
-      sharedReserveBefore -
-      (sharedGame.oilFieldById(sharedFieldId)?.remainingReserve ?? 0);
-    const landOnlyDrain =
-      landOnlyReserveBefore -
-      (landOnlyGame.oilFieldById(landOnlyFieldId)?.remainingReserve ?? 0);
-    const offshoreOnlyDrain =
-      offshoreOnlyReserveBefore -
-      (offshoreOnlyGame.oilFieldById(offshoreOnlyFieldId)?.remainingReserve ??
-        0);
-
-    expect(sharedDrain).toBeGreaterThan(0);
-    expect(sharedDrain).toBeLessThan(landOnlyDrain + offshoreOnlyDrain);
-    expect(sharedPlayer.gold()).toBeGreaterThan(sharedGoldBefore);
+    expect(earned).toBeGreaterThan(20_000n);
+    expect(earned).toBeLessThan(40_000n);
   });
 
   test("transport ships can capture hostile finished offshore rigs in place", async () => {

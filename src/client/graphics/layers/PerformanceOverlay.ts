@@ -48,6 +48,18 @@ export class PerformanceOverlay extends LitElement implements Layer {
   private tickDelayMax: number = 0;
 
   @state()
+  private tickExecExpanded: boolean = false;
+
+  @state()
+  private tickExecLastCount: number = 0;
+
+  @state()
+  private tickExecLastTotalMs: number = 0;
+
+  @state()
+  private tickExecLastDurations: Record<string, number> = {};
+
+  @state()
   private isVisible: boolean = false;
 
   @state()
@@ -116,6 +128,11 @@ export class PerformanceOverlay extends LitElement implements Layer {
     { avg: number; max: number; last: number; total: number }
   > = new Map();
 
+  private tickExecStats: Map<
+    string,
+    { avg: number; max: number; last: number; total: number }
+  > = new Map();
+
   @state()
   private tickLayerLastCount: number = 0;
 
@@ -161,10 +178,12 @@ export class PerformanceOverlay extends LitElement implements Layer {
     tickDelay: string;
     layersHeader: string;
     tickLayersHeader: string;
+    tickExecHeader: string;
     collapse: string;
     expand: string;
     renderLayersTableHeader: string;
     tickLayersTableHeader: string;
+    tickExecTableHeader: string;
   } = {
     copied: "performance_overlay.copied",
     failedCopy: "performance_overlay.failed_copy",
@@ -181,10 +200,12 @@ export class PerformanceOverlay extends LitElement implements Layer {
     tickDelay: "performance_overlay.tick_delay",
     layersHeader: "performance_overlay.layers_header",
     tickLayersHeader: "performance_overlay.tick_layers_header",
+    tickExecHeader: "performance_overlay.tick_exec_header",
     collapse: "performance_overlay.collapse",
     expand: "performance_overlay.expand",
     renderLayersTableHeader: "performance_overlay.render_layers_table_header",
     tickLayersTableHeader: "performance_overlay.tick_layers_table_header",
+    tickExecTableHeader: "performance_overlay.tick_exec_table_header",
   };
 
   private ensureUiText() {
@@ -225,6 +246,7 @@ export class PerformanceOverlay extends LitElement implements Layer {
       tickDelay: translateText("performance_overlay.tick_delay"),
       layersHeader: translateText("performance_overlay.layers_header"),
       tickLayersHeader: translateText("performance_overlay.tick_layers_header"),
+      tickExecHeader: translateText("performance_overlay.tick_exec_header"),
       collapse: translateText("performance_overlay.collapse"),
       expand: translateText("performance_overlay.expand"),
       renderLayersTableHeader: translateText(
@@ -232,6 +254,9 @@ export class PerformanceOverlay extends LitElement implements Layer {
       ),
       tickLayersTableHeader: translateText(
         "performance_overlay.tick_layers_table_header",
+      ),
+      tickExecTableHeader: translateText(
+        "performance_overlay.tick_exec_table_header",
       ),
     };
   }
@@ -477,7 +502,11 @@ export class PerformanceOverlay extends LitElement implements Layer {
   };
 
   private onTickMetricsEvent = (event: TickMetricsEvent) => {
-    this.updateTickMetrics(event.tickExecutionDuration, event.tickDelay);
+    this.updateTickMetrics(
+      event.tickExecutionDuration,
+      event.tickDelay,
+      event.tickExecutionBreakdown,
+    );
   };
 
   private onUserSettingsChanged = (event: CustomEvent<string>) => {
@@ -722,15 +751,20 @@ export class PerformanceOverlay extends LitElement implements Layer {
 
     // reset tick layer breakdown
     this.tickLayerStats.clear();
+    this.tickExecStats.clear();
     this.tickLayerLastCount = 0;
     this.tickLayerLastTotalMs = 0;
     this.tickLayerLastDurations = {};
+    this.tickExecLastCount = 0;
+    this.tickExecLastTotalMs = 0;
+    this.tickExecLastDurations = {};
     this.renderLastTickFrameCount = 0;
     this.renderLastTickLayerTotalMs = 0;
     this.renderLastTickLayerDurations = {};
     this.renderPerTickLayerStats.clear();
     this.renderLayersExpanded = false;
     this.tickLayersExpanded = false;
+    this.tickExecExpanded = false;
   };
 
   private toggleRenderLayersExpanded = (e: Event) => {
@@ -743,6 +777,12 @@ export class PerformanceOverlay extends LitElement implements Layer {
     e.preventDefault();
     e.stopPropagation();
     this.tickLayersExpanded = !this.tickLayersExpanded;
+  };
+
+  private toggleTickExecExpanded = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    this.tickExecExpanded = !this.tickExecExpanded;
   };
 
   updateFrameMetrics(
@@ -898,7 +938,11 @@ export class PerformanceOverlay extends LitElement implements Layer {
     });
   }
 
-  updateTickMetrics(tickExecutionDuration?: number, tickDelay?: number) {
+  updateTickMetrics(
+    tickExecutionDuration?: number,
+    tickDelay?: number,
+    tickExecutionBreakdown?: Record<string, number>,
+  ) {
     if (!this.isVisible) return;
 
     const now = performance.now();
@@ -967,6 +1011,37 @@ export class PerformanceOverlay extends LitElement implements Layer {
         this.tickDelayMax = Math.round(max);
       }
     }
+
+    if (tickExecutionBreakdown) {
+      this.updateTickExecStats(tickExecutionBreakdown);
+    }
+  }
+
+  private updateTickExecStats(tickExecutionBreakdown: Record<string, number>) {
+    const alpha = 0.2;
+    const entries = Object.entries(tickExecutionBreakdown);
+    this.tickExecLastCount = entries.length;
+    this.tickExecLastDurations = tickExecutionBreakdown;
+    this.tickExecLastTotalMs = entries.reduce((acc, [, duration]) => {
+      return acc + duration;
+    }, 0);
+
+    entries.forEach(([name, duration]) => {
+      const existing = this.tickExecStats.get(name);
+      if (!existing) {
+        this.tickExecStats.set(name, {
+          avg: duration,
+          max: duration,
+          last: duration,
+          total: duration,
+        });
+      } else {
+        const avg = existing.avg + alpha * (duration - existing.avg);
+        const max = Math.max(existing.max, duration);
+        const total = existing.total + duration;
+        this.tickExecStats.set(name, { avg, max, last: duration, total });
+      }
+    });
   }
 
   shouldTransform(): boolean {
@@ -1005,6 +1080,7 @@ export class PerformanceOverlay extends LitElement implements Layer {
         delayMaxMs: this.tickDelayMax,
         executionSamples: [...this.tickExecutionTimes],
         delaySamples: [...this.tickDelayTimes],
+        executionBreakdownLast: { ...this.tickExecLastDurations },
       },
       renderPerTickLast: {
         frames: this.renderLastTickFrameCount,
@@ -1016,6 +1092,9 @@ export class PerformanceOverlay extends LitElement implements Layer {
       ),
       tickLayers: PerformanceOverlay.computeLayerBreakdown(
         this.tickLayerStats,
+      ).map((layer) => ({ ...layer })),
+      tickExecutions: PerformanceOverlay.computeLayerBreakdown(
+        this.tickExecStats,
       ).map((layer) => ({ ...layer })),
     };
   }
@@ -1094,16 +1173,25 @@ export class PerformanceOverlay extends LitElement implements Layer {
     const renderLayerBreakdown = this.renderLayersExpanded
       ? PerformanceOverlay.computeLayerBreakdown(this.layerStats)
       : [];
+    const tickExecBreakdown = this.tickExecExpanded
+      ? PerformanceOverlay.computeLayerBreakdown(this.tickExecStats)
+      : [];
     const tickLayerBreakdown = this.tickLayersExpanded
       ? PerformanceOverlay.computeLayerBreakdown(this.tickLayerStats)
       : [];
 
     const renderLayersToShow = renderLayerBreakdown.slice(0, 10);
+    const tickExecsToShow = tickExecBreakdown.slice(0, 10);
     const tickLayersToShow = tickLayerBreakdown.slice(0, 10);
 
     const maxLayerAvg =
       renderLayersToShow.length > 0
         ? Math.max(...renderLayersToShow.map((l) => l.avg))
+        : 1;
+
+    const maxTickExecAvg =
+      tickExecsToShow.length > 0
+        ? Math.max(...tickExecsToShow.map((l) => l.avg))
         : 1;
 
     const maxTickLayerAvg =
@@ -1177,6 +1265,58 @@ export class PerformanceOverlay extends LitElement implements Layer {
             <span>${this.tickDelayAvg.toFixed(2)}ms</span>
             (${this.uiText.maxLabel} <span>${this.tickDelayMax}ms</span>)
           </div>
+          ${this.tickExecStats.size
+            ? html`<div class="layers-section">
+                <div class="performance-line section-header">
+                  <span>${this.uiText.tickExecHeader}</span>
+                  <button
+                    class="collapse-button"
+                    @click=${this.toggleTickExecExpanded}
+                    title=${this.tickExecExpanded
+                      ? this.uiText.collapse
+                      : this.uiText.expand}
+                  >
+                    ${this.tickExecExpanded ? "▾" : "▸"}
+                  </button>
+                </div>
+                <div class="performance-line">
+                  ${translateText("performance_overlay.tick_exec_summary", {
+                    count: this.tickExecLastCount,
+                    ms: this.tickExecLastTotalMs.toFixed(2),
+                  })}
+                </div>
+                ${this.tickExecExpanded
+                  ? html`<div class="layer-row table-header" style="--pct: 0%;">
+                        <span class="layer-name"></span>
+                        <span class="layer-metrics">
+                          ${this.uiText.tickExecTableHeader}
+                        </span>
+                      </div>
+                      ${tickExecsToShow.map((entry) => {
+                        const width = Math.min(
+                          100,
+                          (entry.avg / maxTickExecAvg) * 100 || 0,
+                        );
+                        const lastTickMs =
+                          this.tickExecLastDurations[entry.name] ?? 0;
+                        const isInactive = lastTickMs <= 0.01;
+                        const title = `${entry.name} | last tick: ${lastTickMs.toFixed(2)}ms`;
+                        return html`<div
+                          class="layer-row ${isInactive ? "inactive" : ""}"
+                          style="--pct: ${width}%;"
+                          title=${title}
+                        >
+                          <span class="layer-name" title=${entry.name}
+                            >${entry.name}</span
+                          >
+                          <span class="layer-metrics">
+                            ${entry.avg.toFixed(2)} / ${entry.max.toFixed(2)}ms
+                          </span>
+                        </div>`;
+                      })}`
+                  : html``}
+              </div>`
+            : html``}
           ${this.layerStats.size
             ? html`<div class="layers-section">
                 <div class="performance-line section-header">

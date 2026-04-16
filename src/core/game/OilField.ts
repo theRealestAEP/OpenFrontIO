@@ -40,8 +40,13 @@ type OilFieldTier = {
 
 export class ProceduralOilFieldSource implements OilFieldSource {
   generate(gameMap: GameMap, config: Config): OilFieldLayout[] {
+    const oceanTileCount = countOceanTiles(gameMap);
+    if (oceanTileCount === 0) {
+      return [];
+    }
+
     const desiredCount = clamp(
-      Math.floor(gameMap.numLandTiles() / 18_000),
+      Math.floor(oceanTileCount / 18_000),
       OIL_FIELD_MIN_COUNT,
       OIL_FIELD_MAX_COUNT,
     );
@@ -52,10 +57,11 @@ export class ProceduralOilFieldSource implements OilFieldSource {
         gameMap.width(),
         gameMap.height(),
         gameMap.numLandTiles(),
+        oceanTileCount,
       ].join(":"),
     );
     const random = new PseudoRandom(seed);
-    const candidates = this.buildCandidates(gameMap, random);
+    const candidates = this.buildCandidates(gameMap, random, oceanTileCount);
     if (candidates.length === 0) {
       return [];
     }
@@ -64,7 +70,7 @@ export class ProceduralOilFieldSource implements OilFieldSource {
     const minCenterDistance = Math.max(
       6,
       Math.floor(
-        Math.sqrt(gameMap.numLandTiles() / Math.max(1, desiredCount)) / 12,
+        Math.sqrt(oceanTileCount / Math.max(1, desiredCount)) / 12,
       ),
     );
     const minCenterDistanceSquared = minCenterDistance ** 2;
@@ -98,7 +104,7 @@ export class ProceduralOilFieldSource implements OilFieldSource {
       .map((field, index) => {
         const tiles = Array.from(
           gameMap.circleSearch(field.tile, field.tier.radius, (tile) => {
-            return gameMap.isLand(tile) || gameMap.isOcean(tile);
+            return gameMap.isOcean(tile);
           }),
         );
         if (tiles.length === 0) {
@@ -118,33 +124,26 @@ export class ProceduralOilFieldSource implements OilFieldSource {
   private buildCandidates(
     gameMap: GameMap,
     random: PseudoRandom,
+    oceanTileCount: number,
   ): Array<{ tile: TileRef; score: number }> {
     const stride = Math.max(
       1,
-      Math.floor(Math.sqrt(gameMap.numLandTiles() / 1_000_000)),
+      Math.floor(Math.sqrt(oceanTileCount / 1_000_000)),
     );
     const candidates: Array<{ tile: TileRef; score: number }> = [];
 
     for (let y = 0; y < gameMap.height(); y += stride) {
       for (let x = 0; x < gameMap.width(); x += stride) {
         const tile = gameMap.ref(x, y);
-        if (!gameMap.isLand(tile)) {
+        if (!gameMap.isOcean(tile)) {
           continue;
         }
-        const magnitude = gameMap.magnitude(tile);
-        let weight = 0;
-        if (magnitude < 10) {
-          weight = 2.25;
-        } else if (magnitude < 20) {
-          weight = 1.9;
-        } else {
-          weight = 1.5;
-        }
-        if (gameMap.isOceanShore(tile) || gameMap.isShore(tile)) {
-          weight += 0.5;
-        }
-        if (weight <= 0) {
-          continue;
+        let weight = 1.5;
+        if (
+          gameMap.isShoreline(tile) ||
+          gameMap.neighbors(tile).some((neighbor) => gameMap.isLand(neighbor))
+        ) {
+          weight += 0.75;
         }
         candidates.push({
           tile,
@@ -256,19 +255,41 @@ export class OilFieldManager {
     if (amount <= 0) {
       return 0;
     }
-    const available = this.remainingReserve(fieldId);
-    if (available <= OIL_FIELD_EPSILON) {
-      this.setRemainingReserve(fieldId, 0);
+    if (!this.layoutsById.has(fieldId)) {
       return 0;
     }
-    const extracted = Math.min(available, amount);
-    this.setRemainingReserve(fieldId, available - extracted);
-    return extracted;
+
+    // Infinite-oil prototype:
+    // Keep the extraction API in place so the rest of the oil system can stay unchanged,
+    // but stop mutating `remainingById` so fields no longer deplete over time.
+    // To restore finite fields later, uncomment the reserve math below and return the
+    // clamped extracted amount instead of the requested amount.
+    //
+    // const available = this.remainingReserve(fieldId);
+    // if (available <= OIL_FIELD_EPSILON) {
+    //   this.setRemainingReserve(fieldId, 0);
+    //   return 0;
+    // }
+    // const extracted = Math.min(available, amount);
+    // this.setRemainingReserve(fieldId, available - extracted);
+    // return extracted;
+
+    return amount;
   }
 }
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function countOceanTiles(gameMap: GameMap): number {
+  let oceanTiles = 0;
+  gameMap.forEachTile((tile) => {
+    if (gameMap.isOcean(tile)) {
+      oceanTiles++;
+    }
+  });
+  return oceanTiles;
 }
 
 function pickTier(random: PseudoRandom): OilFieldTier {
