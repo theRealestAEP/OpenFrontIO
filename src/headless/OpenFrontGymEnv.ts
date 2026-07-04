@@ -20,6 +20,7 @@ import {
   PlayerType,
   TerraNullius,
   TeamGameSpawnAreas,
+  TerrainType,
   UnitType,
 } from "../core/game/Game";
 import { TileRef } from "../core/game/GameMap";
@@ -194,6 +195,37 @@ interface SpatialCache {
   };
 }
 
+// Stage-2 "hybrid retina": a fixed-resolution 64x64 downsample of the full tile
+// grid, produced ONLY when observeEntities is asked for it (opt-in). Separate
+// from spatialCache so it never thrashes the size-32 observe() cache when both
+// are computed on the same step. Static (terrain) planes are precomputed once
+// per (size, numLandTiles); dynamic planes are rebuilt per call.
+const RETINA_SIZE = 64;
+// Plane order is the model's channel order — APPEND-ONLY, never reorder (v2
+// checkpoints are channel-aligned like the action vocabulary).
+const RETINA_PLANES = [
+  "own", // 0 own territory presence
+  "enemy", // 1 enemy territory intensity (per-cell enemy land share)
+  "neutral", // 2 neutral (unowned) land presence
+  "water", // 3 water presence
+  "mountain", // 4 mountain / impassable presence
+  "fallout", // 5 fallout presence
+  "ownBorderUnderAttack", // 6 own border tile adjacent to enemy-owned land
+  "enemyStructure", // 7 enemy structure density
+] as const;
+const RETINA_STRUCT_NORM = 3; // enemy-structure count that saturates the plane
+
+interface RetinaCache {
+  size: number;
+  numLandTiles: number;
+  cellByTile: number[];
+  landTileCount: number[]; // land tiles per cell (enemy-share denominator)
+  landTiles: TileRef[];
+  landPresence: Uint8Array; // static: any land tile in cell
+  waterPresence: Uint8Array; // static: any water tile in cell
+  mountainPresence: Uint8Array; // static: any mountain tile in cell
+}
+
 interface CandidateFeatureContext {
   actor: Player | null;
   actorFeatures: number[];
@@ -330,6 +362,7 @@ export class OpenFrontGymEnv {
   private lastCandidates: ActionCandidate[] = [];
   private maxTurnNumber = DEFAULT_CONFIG.maxTurns;
   private spatialCache: SpatialCache | null = null;
+  private retinaCache: RetinaCache | null = null;
   private shoreLandTilesCache: TileRef[] | null = null;
   private candidateTimings: Record<string, number> | null = null;
   private candidateFeatureContext: CandidateFeatureContext | null = null;
@@ -356,6 +389,7 @@ export class OpenFrontGymEnv {
     this.lastCandidatesByClient = new Map();
     this.previousMetricsByClient = new Map();
     this.spatialCache = null;
+    this.retinaCache = null;
     this.shoreLandTilesCache = null;
     this.actionTranscript = [];
     this.startedAt = Date.now();
@@ -462,6 +496,7 @@ export class OpenFrontGymEnv {
     this.lastCandidatesByClient = new Map();
     this.previousMetricsByClient = new Map();
     this.spatialCache = null;
+    this.retinaCache = null;
     this.shoreLandTilesCache = null;
     this.actionTranscript = [];
     this.startedAt = Date.now();
@@ -611,13 +646,22 @@ export class OpenFrontGymEnv {
    * exact coordinate. This is how we keep full map resolution without a dense
    * 1500x1500 tensor.
    */
-  observeEntities(cid: ClientID = this.clientID): {
+  observeEntities(
+    cid: ClientID = this.clientID,
+    opts: { spatial2?: boolean } = {},
+  ): {
     vector: number[];
     players: PlayerSummary[];
     tokens: Array<{
       kind: number; owner: number; rel: number;
       x: number; y: number; troops: number; health: number;
     }>;
+    spatial2?: {
+      planes: string[];
+      size: number;
+      dtype: "uint8";
+      data: string;
+    };
   } {
     const game = this.requireRunner().game;
     const me = game.playerByClientID(cid);
@@ -653,7 +697,176 @@ export class OpenFrontGymEnv {
       });
     }
     const obs = this.observe(cid).observation;
-    return { vector: obs.vector, players: obs.players, tokens };
+    const result: {
+      vector: number[];
+      players: PlayerSummary[];
+      tokens: typeof tokens;
+      spatial2?: {
+        planes: string[];
+        size: number;
+        dtype: "uint8";
+        data: string;
+      };
+    } = { vector: obs.vector, players: obs.players, tokens };
+    if (opts.spatial2) {
+      result.spatial2 = this.retinaPlanes(cid);
+    }
+    return result;
+  }
+
+  /**
+   * Stage-2 hybrid retina: 8 downsampled 64x64 uint8 planes (see RETINA_PLANES)
+   * packed plane-major, row-major, base64-encoded. Presence planes are max-pool
+   * over the tile grid (255 if any qualifying tile lands in the cell); the two
+   * graded planes (enemy territory, enemy structures) carry a per-cell intensity.
+   * Opt-in via observeEntities({ spatial2: true }) so v1 consumers are untouched.
+   */
+  private retinaPlanes(cid: ClientID = this.clientID): {
+    planes: string[];
+    size: number;
+    dtype: "uint8";
+    data: string;
+  } {
+    const game = this.requireRunner().game;
+    const me = game.playerByClientID(cid);
+    const size = RETINA_SIZE;
+    const cache = this.getRetinaCache(size);
+    const cellCount = size * size;
+    const cellByTile = cache.cellByTile;
+
+    // Dynamic accumulators (per cell).
+    const ownCount = new Int32Array(cellCount);
+    const enemyLandCount = new Int32Array(cellCount);
+    const falloutPresence = new Uint8Array(cellCount);
+    const borderUnderAttack = new Uint8Array(cellCount);
+    const enemyStructCount = new Int32Array(cellCount);
+
+    for (const owner of game.players()) {
+      const isSelf = owner.id() === me?.id();
+      for (const tile of owner.tiles()) {
+        const i = cellByTile[tile];
+        if (i === undefined) continue;
+        if (isSelf) ownCount[i]++;
+        else enemyLandCount[i]++;
+      }
+    }
+
+    // Own border tiles that neighbor enemy-owned land — the "under attack" front.
+    if (me !== null) {
+      for (const tile of me.borderTiles()) {
+        const i = cellByTile[tile];
+        if (i === undefined) continue;
+        for (const n of game.neighbors(tile)) {
+          const nOwner = game.owner(n);
+          if (nOwner.isPlayer() && nOwner !== me) {
+            borderUnderAttack[i] = 1;
+            break;
+          }
+        }
+      }
+    }
+
+    if (game.numTilesWithFallout() > 0) {
+      for (const tile of cache.landTiles) {
+        if (!game.hasFallout(tile)) continue;
+        const i = cellByTile[tile];
+        if (i !== undefined) falloutPresence[i] = 1;
+      }
+    }
+
+    for (const unit of game.units()) {
+      const i = cellByTile[unit.tile()];
+      if (i === undefined) continue;
+      const owner = unit.owner();
+      if (me === null || owner.id() !== me.id()) enemyStructCount[i]++;
+    }
+
+    const packed = new Uint8Array(RETINA_PLANES.length * cellCount);
+    const put = (planeIndex: number, cell: number, value: number) => {
+      packed[planeIndex * cellCount + cell] = value;
+    };
+    for (let i = 0; i < cellCount; i++) {
+      const landHere = cache.landTileCount[i];
+      put(0, i, ownCount[i] > 0 ? 255 : 0);
+      put(
+        1,
+        i,
+        landHere > 0
+          ? Math.max(0, Math.min(255, Math.round((enemyLandCount[i] / landHere) * 255)))
+          : 0,
+      );
+      const neutral = landHere - ownCount[i] - enemyLandCount[i];
+      put(2, i, neutral > 0 ? 255 : 0);
+      put(3, i, cache.waterPresence[i] ? 255 : 0);
+      put(4, i, cache.mountainPresence[i] ? 255 : 0);
+      put(5, i, falloutPresence[i] ? 255 : 0);
+      put(6, i, borderUnderAttack[i] ? 255 : 0);
+      put(
+        7,
+        i,
+        Math.max(
+          0,
+          Math.min(255, Math.round((enemyStructCount[i] / RETINA_STRUCT_NORM) * 255)),
+        ),
+      );
+    }
+
+    return {
+      planes: [...RETINA_PLANES],
+      size,
+      dtype: "uint8",
+      data: Buffer.from(
+        packed.buffer,
+        packed.byteOffset,
+        packed.byteLength,
+      ).toString("base64"),
+    };
+  }
+
+  private getRetinaCache(size: number): RetinaCache {
+    const game = this.requireRunner().game;
+    const numLandTiles = game.numLandTiles();
+    if (
+      this.retinaCache !== null &&
+      this.retinaCache.size === size &&
+      this.retinaCache.numLandTiles === numLandTiles
+    ) {
+      return this.retinaCache;
+    }
+    const cellCount = size * size;
+    const cellByTile: number[] = [];
+    const landTileCount = new Array<number>(cellCount).fill(0);
+    const landPresence = new Uint8Array(cellCount);
+    const waterPresence = new Uint8Array(cellCount);
+    const mountainPresence = new Uint8Array(cellCount);
+    const landTiles: TileRef[] = [];
+    const w = Math.max(1, game.width());
+    const h = Math.max(1, game.height());
+    game.forEachTile((tile) => {
+      const bx = Math.min(size - 1, Math.floor((game.x(tile) / w) * size));
+      const by = Math.min(size - 1, Math.floor((game.y(tile) / h) * size));
+      const i = by * size + bx;
+      cellByTile[tile] = i;
+      if (game.isLand(tile)) {
+        landPresence[i] = 1;
+        landTileCount[i]++;
+        landTiles.push(tile);
+        if (game.terrainType(tile) === TerrainType.Mountain) mountainPresence[i] = 1;
+      } else {
+        waterPresence[i] = 1;
+      }
+    });
+    this.retinaCache = {
+      size,
+      numLandTiles,
+      cellByTile,
+      landTileCount,
+      landTiles,
+      landPresence,
+      waterPresence,
+      mountainPresence,
+    };
+    return this.retinaCache;
   }
 
   /**
