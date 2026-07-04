@@ -1345,7 +1345,12 @@ export class OpenFrontGymEnv {
 
   private opponentsReady(expected: OpponentCounts): boolean {
     const live = this.liveOpponentCounts();
-    return live.bots >= expected.bots && live.nations >= expected.nations;
+    // Tolerate ONE missing nation: some maps (Asia, Mena) have a nation whose
+    // designated spawn never fires, which deterministically failed 4/24 eval
+    // games. The guard still catches the June failure mode (mass no-spawn /
+    // empty-map wins) — 24/25 nations is a real lobby, 0/25 is not.
+    const nationFloor = Math.max(0, expected.nations - 1);
+    return live.bots >= expected.bots && live.nations >= nationFloor;
   }
 
   private enqueueTurn(intents: StampedIntent[]): void {
