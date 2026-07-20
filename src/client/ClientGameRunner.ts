@@ -351,6 +351,8 @@ function mountWebGLFrameLoop(
   });
   resizeObs.observe(glCanvas);
 
+  let lastAIBridgeUpdate = 0;
+
   const syncCamera = (): void => {
     const scale = transformHandler.scale;
     const dpr = renderDpr();
@@ -363,6 +365,23 @@ function mountWebGLFrameLoop(
       mapHeight / 2 +
       (cachedCanvasH - mapHeight) / (2 * scale);
     view.setCameraState(centerX, centerY, scale * dpr);
+    const now = performance.now();
+    if (window.parent !== window && now - lastAIBridgeUpdate >= 100) {
+      lastAIBridgeUpdate = now;
+      window.parent.postMessage(
+        {
+          type: "openfront-ai:camera",
+          mapWidth,
+          mapHeight,
+          viewportWidth: cachedCanvasW,
+          viewportHeight: cachedCanvasH,
+          centerX,
+          centerY,
+          zoom: scale,
+        },
+        "*",
+      );
+    }
     // Invoke the WebGL renderer's frame callback synchronously, with the just-
     // updated camera state. The callback re-arms itself via captureRaf, so
     // we'll get a fresh callback ready for the next canvas2D frame.
@@ -484,6 +503,16 @@ async function createClientGame(
     lobbyConfig.gameStartInfo.gameID,
     lobbyConfig.gameStartInfo.players,
   );
+  if (window.parent !== window) {
+    window.parent.postMessage(
+      {
+        type: "openfront-ai:game",
+        gameStartInfo: lobbyConfig.gameStartInfo,
+        clientID: clientID ?? null,
+      },
+      "*",
+    );
+  }
 
   // Transparent fullscreen overlay used purely as the pointer-event /
   // bounding-rect target for InputHandler + TransformHandler. The actual

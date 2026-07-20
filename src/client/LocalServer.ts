@@ -4,6 +4,7 @@ import { EventBus } from "../core/EventBus";
 import {
   AllPlayersStats,
   ClientID,
+  Intent,
   ClientMessage,
   ClientSendWinnerMessage,
   PartialGameRecordSchema,
@@ -63,12 +64,32 @@ export class LocalServer {
   private turnCheckInterval: NodeJS.Timeout;
   private clientConnect: () => void;
   private clientMessage: (message: ServerMessage) => void;
+  private readonly aiControlled = window.parent !== window;
+  private aiReady = !this.aiControlled;
+  private aiWaitingForTurn = -1;
+  private readonly aiMessage = (event: MessageEvent) => {
+    if (!this.aiControlled || event.source !== window.parent) return;
+    if (event.data?.type !== "openfront-ai:next") return;
+    const throughTurn = Number(event.data.throughTurn ?? -1);
+    if (throughTurn < this.aiWaitingForTurn) return;
+    const intent = event.data.intent as Intent | null;
+    if (intent !== null && this.clientID !== undefined) {
+      this.intents.push({ ...intent, clientID: this.clientID } as StampedIntent);
+    }
+    this.aiReady = true;
+    window.parent.postMessage({ type: "openfront-ai:ready" }, "*");
+  };
 
   constructor(
     private lobbyConfig: LobbyConfig,
     private isReplay: boolean,
     private eventBus: EventBus,
-  ) {}
+  ) {
+    if (this.aiControlled) {
+      window.addEventListener("message", this.aiMessage);
+      window.parent.postMessage({ type: "openfront-ai:local-server" }, "*");
+    }
+  }
 
   public updateCallback(
     clientConnect: () => void,
@@ -92,6 +113,7 @@ export class LocalServer {
       const canQueueNextTurn =
         backlog === 0 || (maxBacklog > 0 && backlog < maxBacklog);
       if (
+        this.aiReady &&
         canQueueNextTurn &&
         Date.now() > this.turnStartTime + turnIntervalMs
       ) {
@@ -163,6 +185,7 @@ export class LocalServer {
       } satisfies ServerStartGameMessage);
     }
     if (clientMsg.type === "intent") {
+      if (this.aiControlled) return;
       // Server stamps clientID - client doesn't send it
       const stampedIntent = {
         ...clientMsg.intent,
@@ -260,11 +283,22 @@ export class LocalServer {
       type: "turn",
       turn: pastTurn,
     });
+    if (this.aiControlled) {
+      if ((pastTurn.turnNumber + 1) % 10 === 0) {
+        this.aiReady = false;
+        this.aiWaitingForTurn = pastTurn.turnNumber;
+      }
+      window.parent.postMessage(
+        { type: "openfront-ai:turn", turn: pastTurn },
+        "*",
+      );
+    }
   }
 
   public endGame() {
     console.log("local server ending game");
     clearInterval(this.turnCheckInterval);
+    window.removeEventListener("message", this.aiMessage);
     if (this.isReplay) {
       return;
     }

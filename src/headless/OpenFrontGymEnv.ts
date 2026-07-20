@@ -1,17 +1,22 @@
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { createHash } from "node:crypto";
+import { deflateRawSync } from "node:zlib";
 import quickChatData from "resources/QuickChat.json";
 import { Config } from "../core/configuration/Config";
 import { Executor } from "../core/execution/ExecutionManager";
+import { NationExecution } from "../core/execution/NationExecution";
 import { GameRunner } from "../core/GameRunner";
 import {
   AllPlayers,
   Attack,
   Difficulty,
+  Execution,
   GameMapSize,
   GameMapType,
   GameMode,
   GameType,
+  Nation,
   Player,
   PlayerInfo,
   PlayerBuildable,
@@ -24,7 +29,11 @@ import {
   UnitType,
 } from "../core/game/Game";
 import { TileRef } from "../core/game/GameMap";
-import { ErrorUpdate, GameUpdateViewData } from "../core/game/GameUpdates";
+import {
+  ErrorUpdate,
+  GameUpdateType,
+  GameUpdateViewData,
+} from "../core/game/GameUpdates";
 import { createGame } from "../core/game/GameImpl";
 import { createNationsForGame } from "../core/game/NationCreation";
 import { genTerrainFromBin } from "../core/game/TerrainMapLoader";
@@ -69,6 +78,10 @@ export interface HeadlessEpisodeConfig {
   controlledPlayers: number;
   mapsRoot: string;
   decisionInterval: number;
+  urgentEventYield: boolean;
+  donateGold: boolean;
+  donateTroops: boolean;
+  waterNukes: boolean;
   maxTurns: number;
   spatialSize: number;
   maxActions: number;
@@ -79,6 +92,13 @@ export interface HeadlessEpisodeConfig {
   // 80 for FFA). Lower it so RL registers real wins at the agent's current
   // capability, then ladder it back up to 80. Undefined = engine default.
   winPercent?: number;
+  // TEST-ONLY sandbox knob (default false): lets build/legality contract
+  // tests exercise the build path without waiting for the real gold curve.
+  // Never set by training or evaluation configs.
+  infiniteGold?: boolean;
+  // Run the native nation strategy for the first controlled player. Used only
+  // to extract policy-observation/native-action teacher pairs.
+  nativeTeacher?: boolean;
 }
 
 export interface ActionCandidate {
@@ -86,6 +106,23 @@ export interface ActionCandidate {
   label: string;
   intent?: Intent;
   features: number[];
+}
+
+export interface ExecutionTranscriptPlayer {
+  id: PlayerID;
+  smallID: number;
+  type: PlayerType;
+  clientID: ClientID | null;
+  displayName: string;
+}
+
+export interface ExecutionTranscriptEntry {
+  tick: number;
+  type: string;
+  fields: Record<
+    string,
+    string | number | boolean | null | ExecutionTranscriptPlayer
+  >;
 }
 
 export interface ObservationActionCandidate {
@@ -215,6 +252,170 @@ const RETINA_PLANES = [
 ] as const;
 const RETINA_STRUCT_NORM = 3; // enemy-structure count that saturates the plane
 
+const PRECISION_V3_SIZE = 128;
+const PRECISION_V3_PLANES = [
+  "ownFraction",
+  "opponentFraction",
+  "neutralFraction",
+  "waterPresence",
+  "landPresence",
+  "highlandPresence",
+  "mountainPresence",
+  "shorePresence",
+  "falloutPresence",
+  "frontierPresence",
+  "dominantOwnerSmallID",
+] as const;
+const PRECISION_V3_LOCAL_PLANES = [
+  "valid",
+  "land",
+  "water",
+  "highland",
+  "mountain",
+  "shore",
+  "fallout",
+  "neutral",
+  "own",
+  "opponent",
+  "ownerSmallID",
+] as const;
+const PRECISION_V3_ENTITY_KINDS = [
+  UnitType.City, UnitType.Port, UnitType.MissileSilo, UnitType.SAMLauncher,
+  UnitType.DefensePost, UnitType.Factory, UnitType.Warship,
+  UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRV,
+  UnitType.TransportShip, UnitType.Train,
+] as const;
+const PRECISION_V3_TRAIN_TYPES = ["none", "Engine", "TailEngine", "Carriage"] as const;
+const PRECISION_V3_TRAIN_LOAD_STATES = ["none", "unloaded", "loaded"] as const;
+const PRECISION_V3_STATION_STATES = ["absent", "present"] as const;
+const PRECISION_V3_SCHEMA = JSON.stringify({
+  version: "precision-v3",
+  globalSize: PRECISION_V3_SIZE,
+  globalPlanes: PRECISION_V3_PLANES,
+  localPlanes: PRECISION_V3_LOCAL_PLANES,
+  localRadius: 2,
+  globalLayout: "plane-major-row-major",
+  localLayout: "patch-major-plane-major-row-major",
+  frontier: "sorted exact TileRef plus owner smallID",
+  entityKinds: PRECISION_V3_ENTITY_KINDS,
+  trainTypes: PRECISION_V3_TRAIN_TYPES,
+  trainLoadStates: PRECISION_V3_TRAIN_LOAD_STATES,
+  stationStates: PRECISION_V3_STATION_STATES,
+  entityLearnedFields: ["kind", "trainType", "trainLoadState", "hasTrainStation"],
+  entityExactResolverMetadata: ["id", "tile", "unitType"],
+  trainVisibility: "client-visible UnitUpdate trainType/loaded and hasTrainStation only; no railroad path, destination, or planning state",
+  visibilityLineage: "docs/STATE_ACTION_INVENTORY.md schema 2 human-visible adapter fields",
+});
+const PRECISION_V3_SCHEMA_HASH = createHash("sha256")
+  .update(PRECISION_V3_SCHEMA)
+  .digest("hex");
+
+const TEMPORAL_V1_SCHEMA = JSON.stringify({
+  version: "temporal-v1",
+  visibilityLineage: "client-visible PlayerUpdate attacks, Unit/UnitIncoming, and involved-player diplomacy events; STATE_ACTION_INVENTORY schema 2",
+  delivery: "monotonic sequence cursor; reads are idempotent; explicit acknowledgement",
+  eventOrder: "tick, kind, identity",
+  mapDimensions: "width and height accompany standalone observations",
+  eventKinds: [
+    "incoming_attack", "weapon_launch", "weapon_incoming",
+    "alliance_request", "alliance_reply", "alliance_broken",
+    "alliance_expired", "alliance_extension", "embargo_start", "embargo_stop",
+    "target_player", "donation_gold", "donation_troops",
+  ],
+  weaponKinds: ["Atom Bomb", "Hydrogen Bomb", "MIRV", "MIRV Warhead"],
+  eventFields: [
+    "sequence:int", "tick:int", "kind:enum", "identity:string-metadata",
+    "actorOwner:smallID+1", "targetOwner:smallID+1", "amount:display-quantized",
+    "tile:TileRef-metadata|null", "targetTile:TileRef-metadata|null",
+    "unitType:enum|null", "accepted:boolean|null",
+  ],
+  currentThreats: [
+    "incomingAttacks:{identity,actorOwner,amount}",
+    "incomingWeapons:{identity,actorOwner,unitType,tile,targetTile}",
+  ],
+  diplomacy: [
+    "alliances:{identity,otherOwner,createdAt,expiresAt}",
+    "incomingRequests:{identity,otherOwner,createdAt}",
+    "outgoingRequests:{identity,otherOwner}",
+    "embargoes:{otherOwner,direction}", "targets:ownerSlot[]",
+  ],
+  earlyYield: "opt-in urgentEventYield only: new incoming_attack or weapon_incoming ends online microtick loop; next response step runs one tick; default legacy cadence and replay unchanged",
+  encoderKinds: [
+    "incoming_attack", "weapon_launch", "weapon_incoming", "alliance_request",
+    "alliance_reply", "alliance_broken", "alliance_expired", "alliance_extension",
+    "embargo_start", "embargo_stop", "target_player", "donation_gold",
+    "donation_troops", "current_incoming_attack", "current_incoming_weapon",
+    "current_alliance", "current_incoming_request", "current_outgoing_request",
+    "current_embargo", "current_embargo_incoming", "current_target",
+  ],
+  encoderFeatures: [
+    "age", "amount", "tileX", "tileY", "hasTile", "targetX", "targetY",
+    "hasTarget", "acceptedKnown", "accepted", "isRecentEvent",
+  ],
+});
+const TEMPORAL_V1_SCHEMA_HASH = createHash("sha256")
+  .update(TEMPORAL_V1_SCHEMA)
+  .digest("hex");
+
+const LEGAL_DOMAINS_V1_SCHEMA = JSON.stringify({
+  version: "legal-domains-v1",
+  order: [
+    "noop", "spawn", "attack", "build_unit", "boat", "move_warship",
+    "allianceRequest", "allianceExtension", "allianceReject", "breakAlliance",
+    "embargo", "emoji", "cancel_attack", "cancel_boat", "delete_unit",
+    "upgrade_structure", "targetPlayer", "donate_gold", "donate_troops",
+    "quick_chat", "embargo_all",
+  ],
+  exactOptions: "each emitted option has complete identity/TileRef/player/direction arguments; targeted missiles emit both flight directions; boat destinations match the water pathfinder's source/target component pair; family coverage is declared; independent of maxActions",
+  continuous: "attack/boat/donation expose display-safe normalized fractions; shared resolver clamps fractions before exact amount construction; direct stale/out-of-range intents reject; troop donations may clamp to private recipient capacity and report actual amount",
+  coverage: {
+    exhaustive: ["spawn", "attack", "boat", "move_warship", "cancel_attack", "cancel_boat", "upgrade_structure", "delete_unit", "diplomacy", "donations", "communication"],
+    deterministicAnchors: ["build_unit: bounded config-declared land/Port/Warship probes plus sampled enemy territory/unit missile targets; Phase3 measures coverage"],
+  },
+  nonIntentUnits: ["Train: auto-spawned by Train Station execution; no player action row"],
+  compactTiles: "spawn and boat destinations, plus each reachable warship water component, use exact row-major little-endian bitsets compressed with raw DEFLATE and base64; count=0 has canonical data=''; inflated count>0 bytes equal ceil(tileCount/8); warship units join only to their declared component and the resolver excludes each unit's current/patrol tiles",
+  unsupported: [],
+});
+const LEGAL_DOMAINS_V1_SCHEMA_HASH = createHash("sha256")
+  .update(LEGAL_DOMAINS_V1_SCHEMA)
+  .digest("hex");
+
+const LEAN_V3_SCHEMA = JSON.stringify({
+  version: "lean-v3",
+  fields: ["summary", "precisionV3", "temporalV1", "legalDomainsV1", "timings"],
+  exclusion: "never calls legacy observe/spatialPlanes/generateCandidates",
+});
+const LEAN_V3_SCHEMA_HASH = createHash("sha256").update(LEAN_V3_SCHEMA).digest("hex");
+
+type TemporalEventKind =
+  | "incoming_attack"
+  | "weapon_launch"
+  | "weapon_incoming"
+  | "alliance_request"
+  | "alliance_reply"
+  | "alliance_broken"
+  | "alliance_expired"
+  | "alliance_extension"
+  | "embargo_start"
+  | "embargo_stop"
+  | "target_player"
+  | "donation_gold"
+  | "donation_troops";
+
+interface TemporalEventV1 {
+  sequence: number;
+  tick: number;
+  kind: TemporalEventKind;
+  identity: string;
+  actorOwner: number;
+  targetOwner: number;
+  amount: number;
+  tile: number | null;
+  targetTile: number | null;
+  unitType: string | null;
+  accepted: boolean | null;
+}
+
 interface RetinaCache {
   size: number;
   numLandTiles: number;
@@ -224,6 +425,15 @@ interface RetinaCache {
   landPresence: Uint8Array; // static: any land tile in cell
   waterPresence: Uint8Array; // static: any water tile in cell
   mountainPresence: Uint8Array; // static: any mountain tile in cell
+}
+
+interface PrecisionV3Cache {
+  width: number;
+  height: number;
+  terrainVersion: number;
+  cellByTile: Int32Array;
+  landDenom: Uint32Array;
+  staticPlanes: Uint8Array;
 }
 
 interface CandidateFeatureContext {
@@ -255,12 +465,17 @@ const DEFAULT_CONFIG: HeadlessEpisodeConfig = {
   controlledPlayers: 1,
   mapsRoot: path.resolve("resources", "maps"),
   decisionInterval: 10,
+  urgentEventYield: false,
+  donateGold: false,
+  donateTroops: false,
+  waterNukes: false,
   maxTurns: 18_000,
   spatialSize: 32,
   maxActions: 256,
   maxPlayers: 64,
   compactCandidates: false,
   compactSpatial: false,
+  nativeTeacher: false,
 };
 
 const CLIENT_ID = "MLAGENT1";
@@ -330,6 +545,28 @@ const SPECIAL_BUILD_UNITS: PlayerBuildableUnitType[] = [
   UnitType.MIRV,
   UnitType.Warship,
 ];
+const TARGETED_MISSILE_UNITS = new Set<UnitType>([
+  UnitType.AtomBomb,
+  UnitType.HydrogenBomb,
+  UnitType.MIRV,
+]);
+const TARGET_PRESERVING_BUILD_UNITS = new Set<UnitType>([
+  ...TARGETED_MISSILE_UNITS,
+  UnitType.Warship,
+]);
+const PRECISION_CELL_SIDE = 128;
+const PRECISION_CELL_PATCH_V1_SCHEMA_HASH =
+  "522719ec99ef5a2a76d5f56e3586b104174fd839ccac9c0bfb69bffe95aae03b";
+const SPATIAL_ACTION_CONTEXT_V1_SCHEMA_HASH =
+  "b774ab4e7c286bc4fa65ea65288e18932d513965a41a1339a125b34c3ba89844";
+const MAX_STRATEGIC_AGE_TICKS = 10;
+const MAX_EXECUTION_TRANSCRIPT_ENTRIES = 10_000;
+const TEMPORAL_WEAPON_UNITS = new Set<UnitType>([
+  UnitType.AtomBomb,
+  UnitType.HydrogenBomb,
+  UnitType.MIRV,
+  UnitType.MIRVWarhead,
+]);
 const QUICK_CHAT_KEYS = Object.entries(quickChatData)
   .flatMap(([category, entries]) =>
     entries.map((entry) => ({
@@ -363,11 +600,31 @@ export class OpenFrontGymEnv {
   private maxTurnNumber = DEFAULT_CONFIG.maxTurns;
   private spatialCache: SpatialCache | null = null;
   private retinaCache: RetinaCache | null = null;
+  private precisionV3Cache: PrecisionV3Cache | null = null;
+  private spatialActionContextCache = new Map<ClientID, {
+    tick: number;
+    precisionV3: ReturnType<OpenFrontGymEnv["precisionObservationV3"]>;
+  }>();
   private shoreLandTilesCache: TileRef[] | null = null;
+  private shoreLandTilesCacheVersion: number | null = null;
+  private waterTilesByComponentCache: Map<number, TileRef[]> | null = null;
+  private waterComponentCacheVersion: number | null = null;
+  private waterComponentBitsetsCache = new Map<number, {
+    count: number; tileCount: number; dtype: "bitset-deflate-raw"; data: string;
+  }>();
   private candidateTimings: Record<string, number> | null = null;
   private candidateFeatureContext: CandidateFeatureContext | null = null;
   private actionTranscript: Array<{ turn: number; candidate: ActionCandidate }> =
     [];
+  private nativeExecutionTranscript: ExecutionTranscriptEntry[] = [];
+  private temporalEventsByClient = new Map<ClientID, TemporalEventV1[]>();
+  private temporalNextSequenceByClient = new Map<ClientID, number>();
+  private temporalSeenAttackIDsByClient = new Map<ClientID, Set<string>>();
+  private temporalSeenLaunchUnitIDsByClient = new Map<ClientID, Set<number>>();
+  private temporalSeenIncomingUnitIDsByClient = new Map<ClientID, Set<number>>();
+  private urgentResponsePendingByClient = new Set<ClientID>();
+  private legacyCandidateGenerationCount = 0;
+  private lastLegalDomainTimings: Record<string, number> = {};
 
   async reset(
     config: Partial<HeadlessEpisodeConfig> = {},
@@ -390,12 +647,28 @@ export class OpenFrontGymEnv {
     this.previousMetricsByClient = new Map();
     this.spatialCache = null;
     this.retinaCache = null;
+    this.precisionV3Cache = null;
+    this.spatialActionContextCache = new Map();
     this.shoreLandTilesCache = null;
+    this.shoreLandTilesCacheVersion = null;
+    this.waterTilesByComponentCache = null;
+    this.waterComponentCacheVersion = null;
+    this.waterComponentBitsetsCache = new Map();
     this.actionTranscript = [];
+    this.nativeExecutionTranscript = [];
+    this.temporalEventsByClient = new Map();
+    this.temporalNextSequenceByClient = new Map();
+    this.temporalSeenAttackIDsByClient = new Map();
+    this.temporalSeenLaunchUnitIDsByClient = new Map();
+    this.temporalSeenIncomingUnitIDsByClient = new Map();
+    this.urgentResponsePendingByClient = new Set();
+    this.legacyCandidateGenerationCount = 0;
+    this.lastLegalDomainTimings = {};
     this.startedAt = Date.now();
 
     const gameStart = buildGameStartInfo(this.config, this.controlledClientIDs);
     this.gameStartInfo = gameStart;
+    this.runner = null;
     this.runner = await createIsolatedGameRunner(
       gameStart,
       this.clientID,
@@ -405,12 +678,17 @@ export class OpenFrontGymEnv {
           this.lastError = update;
         } else {
           this.lastUpdate = update;
+          this.captureTemporalUpdate(update);
         }
       },
       this.config.winPercent,
+      (tick, execution) => this.captureExecution(tick, execution),
+      this.config.nativeTeacher ? this.clientID : undefined,
     );
+    this.resetTemporalBuffers();
     const preSpawnStarted = performance.now();
     const preSpawnTurns = this.preSpawnOpponents();
+    this.resetTemporalBuffers();
     const preSpawnMs = performance.now() - preSpawnStarted;
     this.maxTurnNumber = this.turnNumber + this.config.maxTurns;
     this.previousMetrics = this.metrics();
@@ -497,15 +775,36 @@ export class OpenFrontGymEnv {
     this.previousMetricsByClient = new Map();
     this.spatialCache = null;
     this.retinaCache = null;
+    this.precisionV3Cache = null;
+    this.spatialActionContextCache = new Map();
     this.shoreLandTilesCache = null;
+    this.shoreLandTilesCacheVersion = null;
+    this.waterTilesByComponentCache = null;
+    this.waterComponentCacheVersion = null;
+    this.waterComponentBitsetsCache = new Map();
     this.actionTranscript = [];
+    this.nativeExecutionTranscript = [];
+    this.temporalEventsByClient = new Map();
+    this.temporalNextSequenceByClient = new Map();
+    this.temporalSeenAttackIDsByClient = new Map();
+    this.temporalSeenLaunchUnitIDsByClient = new Map();
+    this.temporalSeenIncomingUnitIDsByClient = new Map();
+    this.urgentResponsePendingByClient = new Set();
+    this.legacyCandidateGenerationCount = 0;
+    this.lastLegalDomainTimings = {};
     this.startedAt = Date.now();
     this.gameStartInfo = info;
-    this.controlledClientIDs =
-      observeClientIDs && observeClientIDs.length > 0
-        ? observeClientIDs
-        : info.players.map((player) => player.clientID);
+    const replayClientIDs = observeClientIDs && observeClientIDs.length > 0
+      ? observeClientIDs
+      : info.players
+        .map((player) => player.clientID)
+        .filter((id): id is ClientID => id !== null);
+    this.controlledClientIDs = [...new Set(replayClientIDs)];
+    if (this.controlledClientIDs.length === 0) {
+      throw new Error("resetFromRecord requires at least one observable client ID");
+    }
     this.clientID = this.controlledClientIDs[0];
+    this.runner = null;
     this.runner = await createIsolatedGameRunner(
       info,
       this.clientID,
@@ -515,9 +814,13 @@ export class OpenFrontGymEnv {
           this.lastError = update;
         } else {
           this.lastUpdate = update;
+          this.captureTemporalUpdate(update);
         }
       },
+      undefined,
+      (tick, execution) => this.captureExecution(tick, execution),
     );
+    this.resetTemporalBuffers();
     this.previousMetrics = this.metrics();
   }
 
@@ -542,14 +845,17 @@ export class OpenFrontGymEnv {
    * turn entries are SPARSE (turnNumber is the game tick; empty ticks omitted),
    * so the caller fills the gap before each entry to stay in lockstep.
    */
-  replayAdvance(ticks: number): void {
+  replayAdvance(ticks: number): number {
     this.requireRunner();
+    let applied = 0;
     for (let i = 0; i < ticks; i++) {
       if (this.isDone()) break;
       this.enqueueTurn([]);
       this.runner!.executeNextTick();
       if (this.lastError !== null) throw new Error(this.lastError.errMsg);
+      applied += 1;
     }
+    return applied;
   }
 
   /**
@@ -562,6 +868,44 @@ export class OpenFrontGymEnv {
     this.enqueueTurn(intents);
     this.runner!.executeNextTick();
     if (this.lastError !== null) throw new Error(this.lastError.errMsg);
+  }
+
+  /** Apply consecutive recorded turns without one JSON-RPC round trip per tick. */
+  replayApplyBatch(turns: StampedIntent[][]): number {
+    this.requireRunner();
+    let applied = 0;
+    for (const intents of turns) {
+      if (this.isDone()) break;
+      this.enqueueTurn(intents);
+      this.runner!.executeNextTick();
+      if (this.lastError !== null) throw new Error(this.lastError.errMsg);
+      applied += 1;
+    }
+    return applied;
+  }
+
+  /** Switch an exact replay reconstruction to normal policy stepping. */
+  beginReplayTakeover(
+    cid: ClientID = this.clientID,
+    config: Partial<HeadlessEpisodeConfig> = {},
+  ) {
+    const player = this.requireRunner().game.playerByClientID(cid);
+    if (player === null || !player.hasSpawned() || !player.isAlive()) {
+      throw new Error("replay takeover player must be spawned and alive");
+    }
+    this.config = { ...this.config, ...config, controlledPlayers: 1 };
+    this.clientID = cid;
+    this.controlledClientIDs = [cid];
+    this.maxTurnNumber = this.turnNumber + this.config.maxTurns;
+    this.previousMetrics = this.metrics(cid);
+    this.previousMetricsByClient = new Map([[cid, this.previousMetrics]]);
+    this.resetTemporalBuffers();
+    return {
+      clientID: cid,
+      turnNumber: this.turnNumber,
+      tick: this.requireRunner().game.ticks(),
+      maxTurnNumber: this.maxTurnNumber,
+    };
   }
 
   /**
@@ -589,14 +933,16 @@ export class OpenFrontGymEnv {
     id: string;
     troops: number;
     targetID: string | null;
+    retreating: boolean;
   }[] {
     const game = this.requireRunner().game;
     const me = game.playerByClientID(cid);
     if (me === null) return [];
     return me.outgoingAttacks().map((a) => ({
       id: a.id(),
-      troops: a.troops(),
+      troops: humanVisibleNumberFloor(a.troops() / 10) * 10,
       targetID: a.target().isPlayer() ? (a.target() as Player).id() : null,
+      retreating: a.retreating(),
     }));
   }
 
@@ -610,6 +956,768 @@ export class OpenFrontGymEnv {
       }
     }
     return null;
+  }
+
+  /** ALL engine-provided legal spawn candidate tiles (same source as
+   * validSpawnTile). The caller snaps the policy's learned coordinate to the
+   * NEAREST of these instead of silently taking the first. */
+  validSpawnTiles(cid: ClientID = this.clientID): number[] {
+    const tiles: number[] = [];
+    for (const c of this.generateCandidates(cid)) {
+      if (c.kind === "intent" && c.intent !== undefined &&
+          (c.intent as { type?: string }).type === "spawn") {
+        const tile = (c.intent as { tile?: number }).tile;
+        if (tile !== undefined) tiles.push(tile);
+      }
+    }
+    return tiles;
+  }
+
+  /** Legality facts for one decision of `cid`.
+   *
+   * EXACT (execution-grade, safe to enable in a sampling mask):
+   *   - spawned/alive gates;
+   *   - attackNeutral (hasLandBorderWithTerraNullius — the exact neutral-attack
+   *     predicate validateRawIntent applies);
+   *   - attackTargets (alive+spawned players that share a border AND pass
+   *     canAttackPlayer — the exact targeted-attack predicate, tightened to
+   *     bordering);
+   *   - spawnTiles (pre-spawn only): the engine's own generated spawn intent
+   *     candidates, each individually legal;
+   *   - buildOptions (post-spawn only): the engine's own generated build
+   *     intent candidates as exact unit+tile pairs — every pair has already
+   *     passed canBuildUnitType AND canBuild (the tile is the engine-snapped
+   *     legal placement).
+   *
+   * INFORMATIONAL ONLY (affordability/counts — NOT proof that any concrete
+   * frozen argument would be accepted; do NOT enable action families from
+   * these alone): buildableUnits, outgoingAttacks, transports, warships,
+   * ownUnits, otherPlayersAlive. */
+  legalActions(cid: ClientID = this.clientID): {
+    spawned: boolean;
+    alive: boolean;
+    attackNeutral: boolean;
+    attackTargets: string[];
+    spawnTiles: number[];
+    buildOptions: {
+      unit: string;
+      tile: number;
+      rocketDirectionUp?: boolean;
+      targetPlayerID?: string;
+    }[];
+    cancelAttackOptions: { attackID: string; targetID: string | null }[];
+    upgradeOptions: { unit: string; unitId: number; tile: number }[];
+    deleteOptions: { unitId: number; tile: number }[];
+    buildableUnits: string[];
+    outgoingAttacks: number;
+    transports: number;
+    warships: number;
+    ownUnits: number;
+    otherPlayersAlive: number;
+  } {
+    const game = this.requireRunner().game;
+    const me = game.playerByClientID(cid);
+    const empty = {
+      spawned: false,
+      alive: false,
+      attackNeutral: false,
+      attackTargets: [] as string[],
+      spawnTiles: [] as number[],
+      buildOptions: [] as {
+        unit: string;
+        tile: number;
+        rocketDirectionUp?: boolean;
+        targetPlayerID?: string;
+      }[],
+      cancelAttackOptions: [] as { attackID: string; targetID: string | null }[],
+      upgradeOptions: [] as { unit: string; unitId: number; tile: number }[],
+      deleteOptions: [] as { unitId: number; tile: number }[],
+      buildableUnits: [] as string[],
+      outgoingAttacks: 0,
+      transports: 0,
+      warships: 0,
+      ownUnits: 0,
+      otherPlayersAlive: 0,
+    };
+    if (me === null) return empty;
+    const spawned = me.hasSpawned();
+    const alive = me.isAlive();
+    const attackTargets: string[] = [];
+    const buildableUnits: string[] = [];
+    const spawnTiles: number[] = [];
+    const buildOptions: {
+      unit: string;
+      tile: number;
+      rocketDirectionUp?: boolean;
+      targetPlayerID?: string;
+    }[] = [];
+    const cancelAttackOptions: { attackID: string; targetID: string | null }[] = [];
+    const upgradeOptions: { unit: string; unitId: number; tile: number }[] = [];
+    const deleteOptions: { unitId: number; tile: number }[] = [];
+    let attackNeutral = false;
+    let otherPlayersAlive = 0;
+    // Exact options come from the engine's OWN candidate generator: pre-spawn
+    // it emits legal spawn intents; post-spawn it emits build intents whose
+    // unit passed canBuildUnitType and whose tile is the canBuild-snapped
+    // legal placement.
+    for (const c of this.generateCandidates(cid)) {
+      if (c.kind !== "intent" || c.intent === undefined) continue;
+      const it = c.intent as {
+        type?: string;
+        unit?: string;
+        tile?: number;
+        rocketDirectionUp?: boolean;
+      };
+      if (it.type === "spawn" && it.tile !== undefined) {
+        spawnTiles.push(it.tile);
+      } else if (
+        it.type === "build_unit" &&
+        it.unit !== undefined &&
+        it.tile !== undefined
+      ) {
+        buildOptions.push({
+          unit: it.unit,
+          tile: it.tile,
+          ...(it.rocketDirectionUp === undefined
+            ? {}
+            : { rocketDirectionUp: it.rocketDirectionUp }),
+        });
+      }
+    }
+    if (spawned && alive) {
+      attackNeutral = hasLandBorderWithTerraNullius(game, me);
+      for (const p of game.players()) {
+        if (p === me || !p.isAlive() || !p.hasSpawned()) continue;
+        otherPlayersAlive++;
+        // targeted attacks may only choose an attackable BORDERING player
+        if (me.sharesBorderWith(p) && me.canAttackPlayer(p, true)) {
+          attackTargets.push(p.id());
+        }
+      }
+      for (const unitType of PlayerBuildable.types) {
+        if (this.canBuildUnitType(me, unitType)) buildableUnits.push(unitType);
+      }
+      const seenBuildOptions = new Set(
+        buildOptions.map((o) => `${o.unit}:${o.tile}`),
+      );
+      // Build placement legality must not disappear because attack/boat
+      // candidates consumed the shared maxActions budget.
+      for (const option of this.placementBuildOptions(me)) {
+        const key = `${option.unit}:${option.tile}`;
+        if (seenBuildOptions.has(key)) continue;
+        seenBuildOptions.add(key);
+        buildOptions.push(option);
+      }
+      // Structure placement probes are local. Missile targets are a separate
+      // exact set: every visible enemy unit tile plus sixteen deterministic
+      // territory samples per enemy. This keeps native target TileRefs without
+      // letting maxActions truncate the high-impact weapon options.
+      for (const target of this.missileTargetTiles(me)) {
+        for (const unitType of TARGETED_MISSILE_UNITS) {
+          if (!PlayerBuildable.has(unitType)) continue;
+          if (!this.canBuildUnitType(me, unitType)) continue;
+          if (me.canBuild(unitType, target.tile) === false) continue;
+          const key = `${unitType}:${target.tile}`;
+          if (seenBuildOptions.has(key)) continue;
+          seenBuildOptions.add(key);
+          buildOptions.push({
+            unit: unitType,
+            tile: target.tile,
+            rocketDirectionUp: true,
+            targetPlayerID: target.targetPlayerID,
+          });
+        }
+      }
+      for (const attack of me.outgoingAttacks()) {
+        if (attack.retreating()) continue;
+        cancelAttackOptions.push({
+          attackID: attack.id(),
+          targetID: attack.target().isPlayer()
+            ? (attack.target() as Player).id()
+            : null,
+        });
+      }
+      const canDelete = me.canDeleteUnit();
+      for (const unit of me.units()) {
+        if (me.canUpgradeUnit(unit)) {
+          upgradeOptions.push({
+            unit: unit.type(),
+            unitId: unit.id(),
+            tile: unit.tile(),
+          });
+        }
+        if (
+          canDelete &&
+          unit.isActive() &&
+          !unit.isMarkedForDeletion() &&
+          game.isLand(unit.tile()) &&
+          game.owner(unit.tile()) === me
+        ) {
+          deleteOptions.push({ unitId: unit.id(), tile: unit.tile() });
+        }
+      }
+    }
+    cancelAttackOptions.sort((a, b) => a.attackID.localeCompare(b.attackID));
+    upgradeOptions.sort((a, b) => a.unitId - b.unitId);
+    deleteOptions.sort((a, b) => a.unitId - b.unitId);
+    return {
+      spawned,
+      alive,
+      attackNeutral,
+      attackTargets,
+      spawnTiles,
+      buildOptions,
+      cancelAttackOptions,
+      upgradeOptions,
+      deleteOptions,
+      buildableUnits,
+      outgoingAttacks: me.outgoingAttacks().length,
+      transports: me.units(UnitType.TransportShip).length,
+      warships: me.units(UnitType.Warship).length,
+      ownUnits: me.units().length,
+      otherPlayersAlive,
+    };
+  }
+
+  legalDomainsV1(cid: ClientID = this.clientID) {
+    const allStarted = performance.now();
+    const game = this.requireRunner().game;
+    const player = game.playerByClientID(cid);
+    const empty = {
+      version: "legal-domains-v1" as const,
+      schemaHash: LEGAL_DOMAINS_V1_SCHEMA_HASH,
+      tick: game.ticks(),
+      width: game.width(),
+      height: game.height(),
+      spawned: false,
+      alive: false,
+      noopOptions: [{}],
+      spawnTiles: { count: 0, tileCount: game.width() * game.height(),
+                    dtype: "bitset-deflate-raw" as const, data: "" },
+      attackOptions: [] as { targetID: string | null }[],
+      attackTroops: { kind: "fraction" as const, min: 0.02, max: 1,
+                      suggestedFraction: 0.7, base: "display_self_troops" as const },
+      buildOptions: [] as { unit: string; tile: number; rocketDirectionUp: boolean; targetPlayerID?: string }[],
+      boatTiles: { count: 0, tileCount: game.width() * game.height(),
+                   dtype: "bitset-deflate-raw" as const, data: "" },
+      boatTroops: { kind: "fraction" as const, min: 0.02, max: 1,
+                    suggestedFraction: 0.3, base: "display_self_troops" as const },
+      moveWarshipDomain: {
+        units: [] as { unitID: number; component: number; tile: number; excludedTiles: number[] }[],
+        components: [] as { component: number; tiles: { count: number; tileCount: number; dtype: "bitset-deflate-raw"; data: string } }[],
+      },
+      cancelAttackOptions: [] as { attackID: string }[],
+      cancelBoatOptions: [] as { unitID: number; tile: number }[],
+      upgradeOptions: [] as { unit: string; unitId: number; tile: number }[],
+      deleteOptions: [] as { unitId: number; tile: number }[],
+      allianceRequestOptions: [] as { recipient: string }[],
+      allianceExtensionOptions: [] as { recipient: string }[],
+      allianceRejectOptions: [] as { requestor: string }[],
+      breakAllianceOptions: [] as { recipient: string }[],
+      targetPlayerOptions: [] as { target: string }[],
+      embargoOptions: [] as { targetID: string; action: "start" | "stop" }[],
+      donateGoldOptions: [] as { recipient: string; amount: { kind: "fraction"; min: number; max: number; engineDefaultFraction: number; base: "display_self_gold" } }[],
+      donateTroopsOptions: [] as { recipient: string; amount: { kind: "fraction"; min: number; max: number; engineDefaultFraction: number; base: "display_self_troops"; recipientCapacityClamp: true } }[],
+      emojiOptions: [] as { recipient: string; emoji: number }[],
+      quickChatOptions: [] as { recipient: string; quickChatKey: string; target?: string }[],
+      embargoAllOptions: [] as { action: "start" | "stop" }[],
+      unsupportedFamilies: [] as string[],
+      partialFamilies: ["build_unit"],
+      buildProposal: {
+        probeLimit: this.config.buildProbeLimit,
+        exhaustive: this.config.buildProbeLimit === "full",
+      },
+      nonIntentUnits: ["Train"],
+    };
+    if (player === null) {
+      this.lastLegalDomainTimings = { totalMs: performance.now() - allStarted };
+      return empty;
+    }
+    empty.spawned = player.hasSpawned();
+    empty.alive = player.isAlive();
+    if (!player.hasSpawned()) {
+      const spawnStarted = performance.now();
+      const tiles = this.unownedLandTiles()
+        .filter((tile) => !game.hasFallout(tile))
+        .sort((a, b) => a - b);
+      const bits = new Uint8Array(Math.ceil((game.width() * game.height()) / 8));
+      for (const tile of tiles) bits[tile >> 3] |= 1 << (tile & 7);
+      empty.spawnTiles = {
+        count: tiles.length,
+        tileCount: game.width() * game.height(),
+        dtype: "bitset-deflate-raw",
+        data: tiles.length === 0
+          ? ""
+          : Buffer.from(deflateRawSync(bits, { level: 1 })).toString("base64"),
+      };
+      this.lastLegalDomainTimings = {
+        spawnMs: performance.now() - spawnStarted,
+        totalMs: performance.now() - allStarted,
+      };
+      return empty;
+    }
+    if (!player.isAlive()) {
+      this.lastLegalDomainTimings = { totalMs: performance.now() - allStarted };
+      return empty;
+    }
+
+    let sectionStarted = performance.now();
+    if (hasLandBorderWithTerraNullius(game, player)) {
+      empty.attackOptions.push({ targetID: null });
+    }
+    for (const target of game.players().slice().sort((a, b) => a.id().localeCompare(b.id()))) {
+      if (target === player || !target.isAlive() || !target.hasSpawned()) continue;
+      if (player.sharesBorderWith(target) && player.canAttackPlayer(target, true)) {
+        empty.attackOptions.push({ targetID: target.id() });
+      }
+    }
+    const attackMs = performance.now() - sectionStarted;
+
+    sectionStarted = performance.now();
+    const seenBuild = new Set<string>();
+    for (const option of this.placementBuildProposalOptions(player)) {
+      seenBuild.add(`${option.unit}:${option.tile}`);
+      empty.buildOptions.push(option);
+    }
+    for (const target of this.missileTargetTiles(player)) {
+      for (const unit of TARGETED_MISSILE_UNITS as Set<PlayerBuildableUnitType>) {
+        if (!this.canBuildUnitType(player, unit) || player.canBuild(unit, target.tile) === false) continue;
+        const key = `${unit}:${target.tile}`;
+        if (seenBuild.has(key)) continue;
+        seenBuild.add(key);
+        empty.buildOptions.push({
+          unit, tile: target.tile as number, rocketDirectionUp: true,
+          targetPlayerID: target.targetPlayerID,
+        });
+      }
+    }
+    empty.buildOptions = empty.buildOptions.flatMap((option) =>
+      TARGETED_MISSILE_UNITS.has(option.unit as PlayerBuildableUnitType)
+        ? [{ ...option, rocketDirectionUp: false },
+           { ...option, rocketDirectionUp: true }]
+        : [option],
+    );
+    empty.buildOptions.sort((a, b) =>
+      a.unit.localeCompare(b.unit) || a.tile - b.tile ||
+      Number(a.rocketDirectionUp) - Number(b.rocketDirectionUp) ||
+      String(a.targetPlayerID ?? "").localeCompare(String(b.targetPlayerID ?? "")),
+    );
+    const buildMs = performance.now() - sectionStarted;
+
+    sectionStarted = performance.now();
+    if (this.canBuildUnitType(player, UnitType.TransportShip) &&
+        player.unitCount(UnitType.TransportShip) < game.config().boatMaxNumber()) {
+      const candidates = this.shoreLandTiles()
+        .filter((tile) => {
+          if (!game.isLand(tile) || !game.isShore(tile)) return false;
+          if (game.hasOwner(tile)) {
+            const owner = game.owner(tile);
+            if (owner === player || (owner.isPlayer() && !player.canAttackPlayer(owner))) {
+              return false;
+            }
+          }
+          return true;
+        });
+      const probes = this.config.boatDestinationProbeLimit === "full"
+        ? candidates
+        : sampleEvenly(candidates, this.config.boatDestinationProbeLimit);
+      const destinations = probes
+        .filter((tile) => player.canBuild(UnitType.TransportShip, tile) !== false)
+        .sort((a, b) => a - b);
+      empty.boatTiles = this.tileBitset(destinations);
+    }
+    const boatMs = performance.now() - sectionStarted;
+    sectionStarted = performance.now();
+    const warships = player.units(UnitType.Warship)
+      .filter((warship) => warship.isActive())
+      .sort((a, b) => a.id() - b.id());
+    if (warships.length > 0) {
+      const wantedComponents = new Set<number>();
+      for (const unit of warships) {
+        const component = game.getWaterComponent(unit.tile());
+        if (component === null) continue;
+        wantedComponents.add(component);
+        const excludedTiles = new Set<number>([unit.tile()]);
+        const patrolTile = unit.warshipState().patrolTile;
+        if (patrolTile !== undefined) excludedTiles.add(patrolTile);
+        empty.moveWarshipDomain.units.push({
+          unitID: unit.id(), component, tile: unit.tile(),
+          excludedTiles: [...excludedTiles].sort((a, b) => a - b),
+        });
+      }
+      const waterByComponent = this.waterTilesByComponent();
+      empty.moveWarshipDomain.components = [...wantedComponents]
+        .sort((a, b) => a - b)
+        .map((component) => {
+          let tiles = this.waterComponentBitsetsCache.get(component);
+          if (tiles === undefined) {
+            tiles = this.tileBitset(waterByComponent.get(component) ?? []);
+            this.waterComponentBitsetsCache.set(component, tiles);
+          }
+          return { component, tiles };
+        });
+    }
+    const warshipMs = performance.now() - sectionStarted;
+    sectionStarted = performance.now();
+    empty.cancelAttackOptions = player.outgoingAttacks()
+      .filter((attack) => !attack.retreating())
+      .map((attack) => ({ attackID: attack.id() }))
+      .sort((a, b) => a.attackID.localeCompare(b.attackID));
+    empty.cancelBoatOptions = player.units(UnitType.TransportShip)
+      .filter((unit) => !unit.transportShipState().isRetreating)
+      .map((unit) => ({ unitID: unit.id(), tile: unit.tile() as number }))
+      .sort((a, b) => a.unitID - b.unitID);
+    for (const unit of player.units().slice().sort((a, b) => a.id() - b.id())) {
+      if (player.canUpgradeUnit(unit)) {
+        empty.upgradeOptions.push({ unit: unit.type(), unitId: unit.id(), tile: unit.tile() });
+      }
+      if (player.canDeleteUnit() && unit.isActive() && !unit.isMarkedForDeletion() &&
+          game.isLand(unit.tile()) && game.owner(unit.tile()) === player) {
+        empty.deleteOptions.push({ unitId: unit.id(), tile: unit.tile() });
+      }
+    }
+    const idFamiliesMs = performance.now() - sectionStarted;
+
+    sectionStarted = performance.now();
+    for (const other of game.players().slice().sort((a, b) => a.id().localeCompare(b.id()))) {
+      if (other === player || !other.isAlive()) continue;
+      if (player.canSendAllianceRequest(other)) {
+        empty.allianceRequestOptions.push({ recipient: other.id() });
+      }
+      const alliance = player.allianceWith(other);
+      if (alliance !== null) {
+        if (player.allianceInfo(other)?.canExtend === true) {
+          empty.allianceExtensionOptions.push({ recipient: other.id() });
+        }
+        empty.breakAllianceOptions.push({ recipient: other.id() });
+      }
+      if (player.canTarget(other)) empty.targetPlayerOptions.push({ target: other.id() });
+      empty.embargoOptions.push({
+        targetID: other.id(), action: player.hasEmbargoAgainst(other) ? "stop" : "start",
+      });
+      if (player.canDonateGold(other)) {
+        if (humanVisibleNumberFloor(Number(player.gold())) > 0) empty.donateGoldOptions.push({
+          recipient: other.id(),
+          amount: { kind: "fraction", min: 0, max: 1, engineDefaultFraction: 1 / 3,
+                    base: "display_self_gold" },
+        });
+      }
+      if (player.canDonateTroops(other)) {
+        if (humanVisibleNumberFloor(player.troops() / 10) * 10 > 0) {
+          empty.donateTroopsOptions.push({
+          recipient: other.id(),
+          amount: {
+            kind: "fraction", min: 0, max: 1, engineDefaultFraction: 1 / 3,
+            base: "display_self_troops", recipientCapacityClamp: true,
+          },
+        }); }
+      }
+      if (player.canSendEmoji(other)) {
+        for (const emoji of EMOJIS) {
+          empty.emojiOptions.push({ recipient: other.id(), emoji });
+        }
+      }
+      if (player.canSendQuickChat(other)) {
+        for (const entry of QUICK_CHAT_KEYS) {
+          empty.quickChatOptions.push({
+            recipient: other.id(),
+            quickChatKey: entry.key,
+            ...(entry.requiresPlayer ? { target: other.id() } : {}),
+          });
+        }
+      }
+    }
+    if (player.canSendEmoji(AllPlayers)) {
+      for (const emoji of EMOJIS) {
+        empty.emojiOptions.push({ recipient: AllPlayers, emoji });
+      }
+    }
+    if (player.canEmbargoAll()) {
+      empty.embargoAllOptions.push({ action: "start" }, { action: "stop" });
+    }
+    empty.allianceRejectOptions = player.incomingAllianceRequests()
+      .map((request) => ({ requestor: request.requestor().id() }))
+      .sort((a, b) => a.requestor.localeCompare(b.requestor));
+    this.lastLegalDomainTimings = {
+      attackMs, buildMs, boatMs, warshipMs, idFamiliesMs,
+      diplomacyMs: performance.now() - sectionStarted,
+      totalMs: performance.now() - allStarted,
+    };
+    return empty;
+  }
+
+  canonicalBuildTile(
+    cid: ClientID = this.clientID,
+    unit: string,
+    tile: number,
+  ): number | null {
+    const game = this.requireRunner().game;
+    const player = game.playerByClientID(cid);
+    if (player === null || !player.hasSpawned() || !player.isAlive() ||
+        !PlayerBuildable.has(unit as PlayerBuildableUnitType) ||
+        !game.isValidRef(tile) ||
+        !this.canBuildUnitType(player, unit as PlayerBuildableUnitType)) {
+      return null;
+    }
+    const canonical = player.canBuild(unit as PlayerBuildableUnitType, tile as TileRef);
+    if (canonical === false) return null;
+    return TARGET_PRESERVING_BUILD_UNITS.has(unit as PlayerBuildableUnitType)
+      ? tile
+      : canonical as number;
+  }
+
+  /** Human-visible native semantic pixels for one fixed 128x128 action cell. */
+  precisionCellPatchV1(
+    cid: ClientID = this.clientID,
+    cellRow = 0,
+    cellCol = 0,
+  ) {
+    const game = this.requireRunner().game;
+    const me = game.playerByClientID(cid);
+    const width = game.width();
+    const height = game.height();
+    const cellRows = Math.ceil(height / PRECISION_CELL_SIDE);
+    const cellCols = Math.ceil(width / PRECISION_CELL_SIDE);
+    if (!Number.isInteger(cellRow) || !Number.isInteger(cellCol) ||
+        cellRow < 0 || cellRow >= cellRows || cellCol < 0 || cellCol >= cellCols) {
+      throw new Error("precision-cell-patch-v1 coarse cell is outside the map");
+    }
+    const planes = [...PRECISION_V3_LOCAL_PLANES];
+    const planeSize = PRECISION_CELL_SIDE * PRECISION_CELL_SIDE;
+    const data = new Uint8Array(planes.length * planeSize);
+    const set = (channel: number, localRow: number, localCol: number, value: number) => {
+      data[channel * planeSize + localRow * PRECISION_CELL_SIDE + localCol] = value;
+    };
+    const startRow = cellRow * PRECISION_CELL_SIDE;
+    const startCol = cellCol * PRECISION_CELL_SIDE;
+    const validHeight = Math.min(PRECISION_CELL_SIDE, height - startRow);
+    const validWidth = Math.min(PRECISION_CELL_SIDE, width - startCol);
+    for (let localRow = 0; localRow < validHeight; localRow++) {
+      for (let localCol = 0; localCol < validWidth; localCol++) {
+        const tile = game.ref(startCol + localCol, startRow + localRow);
+        set(0, localRow, localCol, 1);
+        const land = game.isLand(tile);
+        set(land ? 1 : 2, localRow, localCol, 1);
+        if (game.terrainType(tile) === TerrainType.Highland) set(3, localRow, localCol, 1);
+        if (game.terrainType(tile) === TerrainType.Mountain) set(4, localRow, localCol, 1);
+        if (game.isShore(tile)) set(5, localRow, localCol, 1);
+        if (game.hasFallout(tile)) set(6, localRow, localCol, 1);
+        if (!game.hasOwner(tile)) {
+          if (land) set(7, localRow, localCol, 1);
+        } else {
+          const owner = game.owner(tile);
+          set(owner === me ? 8 : 9, localRow, localCol, 1);
+          set(10, localRow, localCol, Math.min(255, owner.smallID() + 1));
+        }
+      }
+    }
+    return {
+      version: "precision-cell-patch-v1" as const,
+      schemaHash: PRECISION_CELL_PATCH_V1_SCHEMA_HASH,
+      tick: game.ticks(), width, height, cellRow, cellCol, cellRows, cellCols,
+      side: PRECISION_CELL_SIDE, validWidth, validHeight,
+      planes, dtype: "uint8" as const,
+      data: Buffer.from(data.buffer).toString("base64"),
+    };
+  }
+
+  /** Fresh visible entities/economy plus an explicitly aged strategic snapshot. */
+  private policyPlayers(cid: ClientID): Player[] {
+    const game = this.requireRunner().game;
+    const me = game.playerByClientID(cid);
+    const selected: Player[] = [];
+    const seen = new Set<PlayerID>();
+    const add = (player: Player) => {
+      if (seen.has(player.id())) return;
+      seen.add(player.id());
+      selected.push(player);
+    };
+    if (me !== null) {
+      add(me);
+      for (const attack of me.incomingAttacks()) add(attack.attacker());
+      for (const attack of me.outgoingAttacks()) {
+        const target = attack.target();
+        if (target.isPlayer()) add(target);
+      }
+      for (const neighbor of me.nearby()) {
+        if (neighbor.isPlayer()) add(neighbor);
+      }
+      for (const request of me.incomingAllianceRequests()) add(request.requestor());
+      for (const request of me.outgoingAllianceRequests()) add(request.recipient());
+      for (const ally of me.allies()) add(ally);
+      for (const target of me.transitiveTargets()) add(target);
+      for (const partner of me.tradingPartners()) add(partner);
+      for (const embargo of me.getEmbargoes()) add(embargo.target);
+    }
+    for (const player of game.players().slice().sort((a, b) =>
+      b.numTilesOwned() - a.numTilesOwned() || a.smallID() - b.smallID()
+    )) {
+      add(player);
+    }
+    return selected.slice(0, this.config.maxPlayers);
+  }
+
+  spatialActionContextV1(
+    cid: ClientID = this.clientID,
+    refreshStrategic = false,
+    maxStrategicAgeTicks = 10,
+    afterSequence = 0,
+  ) {
+    const currentTick = this.requireRunner().game.ticks();
+    if (!Number.isInteger(maxStrategicAgeTicks) || maxStrategicAgeTicks < 0 ||
+        maxStrategicAgeTicks > MAX_STRATEGIC_AGE_TICKS) {
+      throw new Error(`maxStrategicAgeTicks must be an integer from 0 to ${MAX_STRATEGIC_AGE_TICKS}`);
+    }
+    const cached = this.spatialActionContextCache.get(cid);
+    if (refreshStrategic || cached === undefined) {
+      this.spatialActionContextCache.set(cid, {
+        tick: currentTick,
+        precisionV3: this.precisionObservationV3(cid),
+      });
+    }
+    const strategic = this.spatialActionContextCache.get(cid)!;
+    const strategicAgeTicks = currentTick - strategic.tick;
+    const usable = strategicAgeTicks >= 0 && strategicAgeTicks <= maxStrategicAgeTicks;
+    const game = this.requireRunner().game;
+    const me = game.playerByClientID(cid);
+    const metrics = this.metrics(cid);
+    const visiblePlayers = this.policyPlayers(cid);
+    const fresh = {
+      vector: [
+        metrics.myShare,
+        metrics.myTiles / Math.max(1, game.numLandTiles()),
+        (humanVisibleNumberFloor(metrics.troops / 10) * 10) / 10_000_000,
+        humanVisibleNumberFloor(metrics.gold) / 10_000_000,
+        metrics.rank / Math.max(1, game.players().length),
+        metrics.enemiesAlive / Math.max(1, game.players().length - 1),
+        game.inSpawnPhase() ? 1 : 0,
+        this.isDone() ? 1 : 0,
+      ],
+      players: visiblePlayers
+        .map((player) => summarizePlayer(player, me?.id() ?? null)),
+      tokens: this.visibleEntityTokens(cid),
+      temporalV1: this.temporalObservationV1(cid, afterSequence),
+    };
+    return {
+      version: "spatial-action-context-v1" as const,
+      schemaHash: SPATIAL_ACTION_CONTEXT_V1_SCHEMA_HASH,
+      currentTick,
+      strategicTick: strategic.tick,
+      strategicAgeTicks,
+      maxStrategicAgeTicks,
+      strategicRefreshed: refreshStrategic || cached === undefined,
+      usable,
+      reason: usable ? null : "strategic_snapshot_stale",
+      observation: fresh,
+      strategicPrecisionV3: usable && (refreshStrategic || cached === undefined)
+        ? strategic.precisionV3
+        : null,
+    };
+  }
+
+  /** Read-only exact dispatch gate. It reports canonicalization and rejects
+   * stale observations without submitting an intent or exposing planning state. */
+  validateSpatialIntentV1(
+    cid: ClientID = this.clientID,
+    intent: Intent,
+    observedTick: number,
+    strategicTick: number = observedTick,
+    maxStrategicAgeTicks = 10,
+  ) {
+    const game = this.requireRunner().game;
+    const currentTick = game.ticks();
+    const stale = !Number.isInteger(observedTick) || observedTick !== currentTick;
+    const cachedStrategic = this.spatialActionContextCache.get(cid);
+    const invalidAgeLimit = !Number.isInteger(maxStrategicAgeTicks) ||
+      maxStrategicAgeTicks < 0 || maxStrategicAgeTicks > MAX_STRATEGIC_AGE_TICKS;
+    const missingStrategic = cachedStrategic === undefined;
+    const strategicMismatch = !missingStrategic &&
+      (!Number.isInteger(strategicTick) || strategicTick !== cachedStrategic.tick);
+    const trustedStrategicTick = cachedStrategic?.tick ?? -1;
+    const strategicAgeTicks = currentTick - trustedStrategicTick;
+    const strategicStale = invalidAgeLimit || missingStrategic || strategicMismatch ||
+      strategicAgeTicks < 0 || strategicAgeTicks > maxStrategicAgeTicks;
+    const player = game.playerByClientID(cid);
+    const result = this.validateRawIntent(intent, player);
+    const legal = "intent" in result;
+    const requestedTile = intent.type === "boat" ? intent.dst :
+      intent.type === "spawn" || intent.type === "build_unit" ||
+      intent.type === "move_warship" ? intent.tile : null;
+    const canonicalTile = intent.type === "build_unit"
+      ? this.canonicalBuildTile(cid, intent.unit, intent.tile)
+      : legal ? requestedTile : null;
+    return {
+      version: "spatial-intent-validation-v1" as const,
+      observedTick, currentTick, stale, strategicTick: trustedStrategicTick,
+      requestedStrategicTick: strategicTick, strategicAgeTicks,
+      maxStrategicAgeTicks, strategicStale, legal,
+      dispatchable: legal && !stale && !strategicStale,
+      rejected: stale || strategicStale || !legal,
+      requestedTile,
+      canonicalTile,
+      canonicalized: canonicalTile !== null && canonicalTile !== requestedTile,
+      reason: stale ? "stale_observation" : invalidAgeLimit
+        ? "invalid_strategic_age_limit" : missingStrategic
+        ? "missing_strategic_snapshot" : strategicMismatch
+        ? "strategic_snapshot_mismatch" : strategicStale
+        ? "strategic_snapshot_stale" : legal ? null :
+        ("reason" in result ? result.reason : "invalid_intent"),
+    };
+  }
+
+  leanObservationV3(
+    cid: ClientID = this.clientID,
+    afterSequence = 0,
+    localTiles: number[] = [],
+    localRadius = 2,
+  ) {
+    const started = performance.now();
+    const beforeCandidates = this.legacyCandidateGenerationCount;
+    const game = this.requireRunner().game;
+    const me = game.playerByClientID(cid);
+    const metrics = this.metrics(cid);
+    const summaryStarted = performance.now();
+    const players = this.policyPlayers(cid)
+      .map((player) => summarizePlayer(player, me?.id() ?? null));
+    const summary = {
+      tick: game.ticks(), turnNumber: this.turnNumber,
+      vector: [
+        metrics.myShare,
+        metrics.myTiles / Math.max(1, game.numLandTiles()),
+        (humanVisibleNumberFloor(metrics.troops / 10) * 10) / 10_000_000,
+        humanVisibleNumberFloor(metrics.gold) / 10_000_000,
+        metrics.rank / Math.max(1, game.players().length),
+        metrics.enemiesAlive / Math.max(1, game.players().length - 1),
+        game.inSpawnPhase() ? 1 : 0,
+        this.isDone() ? 1 : 0,
+      ],
+      players,
+      tokens: this.visibleEntityTokens(cid),
+    };
+    const summaryMs = performance.now() - summaryStarted;
+    const precisionStarted = performance.now();
+    const precisionV3 = this.precisionObservationV3(cid, localTiles, localRadius);
+    const precisionMs = performance.now() - precisionStarted;
+    const temporalStarted = performance.now();
+    const temporalV1 = this.temporalObservationV1(cid, afterSequence);
+    const temporalMs = performance.now() - temporalStarted;
+    const legalStarted = performance.now();
+    const legalDomainsV1 = this.legalDomainsV1(cid);
+    const legalMs = performance.now() - legalStarted;
+    return {
+      version: "lean-v3" as const,
+      schemaHash: LEAN_V3_SCHEMA_HASH,
+      summary,
+      precisionV3,
+      temporalV1,
+      legalDomainsV1,
+      timings: {
+        summaryMs, precisionMs, temporalMs, legalMs,
+        legalBreakdownMs: { ...this.lastLegalDomainTimings },
+        totalMs: performance.now() - started,
+        legacyCandidateCalls: this.legacyCandidateGenerationCount - beforeCandidates,
+      },
+    };
   }
 
   /** Inverse of decodeTiles: normalized (x,y) in [0,1] -> nearest valid TileRef.
@@ -648,13 +1756,21 @@ export class OpenFrontGymEnv {
    */
   observeEntities(
     cid: ClientID = this.clientID,
-    opts: { spatial2?: boolean } = {},
+    opts: {
+      spatial2?: boolean; precisionV3?: boolean; localTiles?: number[];
+      localRadius?: number; temporalV1?: boolean; afterSequence?: number;
+    } = {},
   ): {
     vector: number[];
     players: PlayerSummary[];
     tokens: Array<{
       kind: number; owner: number; rel: number;
       x: number; y: number; troops: number; health: number;
+      tile: number; id: number; unitType: string; level: number;
+      active: boolean; underConstruction: boolean;
+      targetTile: number | null; markedForDeletion: boolean;
+      trainType?: string | null; loaded?: boolean | null;
+      hasTrainStation?: boolean;
     }>;
     spatial2?: {
       planes: string[];
@@ -662,6 +1778,8 @@ export class OpenFrontGymEnv {
       dtype: "uint8";
       data: string;
     };
+    precisionV3?: ReturnType<OpenFrontGymEnv["precisionObservationV3"]>;
+    temporalV1?: ReturnType<OpenFrontGymEnv["temporalObservationV1"]>;
   } {
     const game = this.requireRunner().game;
     const me = game.playerByClientID(cid);
@@ -676,7 +1794,7 @@ export class OpenFrontGymEnv {
     const kindIndex = new Map(TOKEN_TYPES.map((t, i) => [t, i]));
     const tokens = [];
     for (const u of game.units(...TOKEN_TYPES)) {
-      if (!u.isActive()) continue;
+      if (!u.isActive() && !u.isUnderConstruction()) continue;
       const tile = u.tile();
       const owner = u.owner();
       const isMe = me !== null && owner === me;
@@ -686,32 +1804,560 @@ export class OpenFrontGymEnv {
         rel: isMe ? 0 : owner.isPlayer() ? 2 : 1, // self / nation-bot / player
         x: game.x(tile) / w,
         y: game.y(tile) / h,
-        troops: Math.log1p(Math.max(0, u.troops?.() ?? 0)),
+        troops: Math.log1p(
+          humanVisibleNumberFloor(Math.max(0, u.troops?.() ?? 0) / 10) * 10,
+        ),
         health: Math.log1p(Math.max(0, Number(u.health?.() ?? 0))),
+        tile: tile as number,
         // id/unitType are NOT part of the model observation (the encoder reads
         // only the fields above) — they let the intent translator resolve
         // "policy coordinate -> concrete unit" for move_warship / upgrade /
         // cancel / delete intents, which the engine validates by unit id.
         id: u.id(),
         unitType: u.type(),
+        level: u.level(),
+        active: u.isActive(),
+        underConstruction: u.isUnderConstruction(),
+        targetTile: TARGET_PRESERVING_BUILD_UNITS.has(u.type())
+          ? (u.targetTile() ?? null)
+          : null,
+        markedForDeletion: u.isMarkedForDeletion(),
       });
     }
     const obs = this.observe(cid).observation;
     const result: {
       vector: number[];
       players: PlayerSummary[];
-      tokens: typeof tokens;
+      tokens: Array<(typeof tokens)[number] & {
+        trainType?: string | null; loaded?: boolean | null;
+        hasTrainStation?: boolean;
+      }>;
       spatial2?: {
         planes: string[];
         size: number;
         dtype: "uint8";
         data: string;
       };
-    } = { vector: obs.vector, players: obs.players, tokens };
+      precisionV3?: ReturnType<OpenFrontGymEnv["precisionObservationV3"]>;
+      temporalV1?: ReturnType<OpenFrontGymEnv["temporalObservationV1"]>;
+    } = {
+      vector: obs.vector,
+      players: obs.players,
+      tokens: opts.precisionV3 ? this.visibleEntityTokens(cid) : tokens,
+    };
     if (opts.spatial2) {
       result.spatial2 = this.retinaPlanes(cid);
     }
+    if (opts.precisionV3) {
+      result.precisionV3 = this.precisionObservationV3(
+        cid,
+        opts.localTiles ?? [],
+        opts.localRadius ?? 2,
+      );
+    }
+    if (opts.temporalV1) {
+      result.temporalV1 = this.temporalObservationV1(cid, opts.afterSequence ?? 0);
+    }
     return result;
+  }
+
+  /** Idempotent cursor read. Events remain buffered until explicit ack; an
+   * observation never consumes them, so multiple callers cannot steal cues. */
+  temporalObservationV1(cid: ClientID = this.clientID, afterSequence = 0) {
+    const game = this.requireRunner().game;
+    const latestIssued = (this.temporalNextSequenceByClient.get(cid) ?? 1) - 1;
+    if (!Number.isInteger(afterSequence) || afterSequence < 0 || afterSequence > latestIssued) {
+      throw new Error(`invalid temporal-v1 cursor ${afterSequence}; latest is ${latestIssued}`);
+    }
+    const me = game.playerByClientID(cid);
+    const events = (this.temporalEventsByClient.get(cid) ?? [])
+      .filter((event) => event.sequence > afterSequence);
+    if (me === null) {
+      return {
+        version: "temporal-v1" as const,
+        schemaHash: TEMPORAL_V1_SCHEMA_HASH,
+        tick: game.ticks(),
+        width: game.width(),
+        height: game.height(),
+        latestSequence: latestIssued,
+        events,
+        current: { incomingAttacks: [], incomingWeapons: [] },
+        diplomacy: {
+          alliances: [], incomingRequests: [], outgoingRequests: [],
+          embargoes: [], targets: [],
+        },
+      };
+    }
+    const ownerSlot = (player: Player) => player.smallID() + 1;
+    const incomingAttacks = me.incomingAttacks()
+      .map((attack) => ({
+        identity: attack.id(),
+        actorOwner: ownerSlot(attack.attacker()),
+        amount: humanVisibleNumberFloor(Math.max(0, attack.troops()) / 10) * 10,
+      }))
+      .sort((a, b) => a.identity.localeCompare(b.identity));
+    const incomingWeapons = game.units(...TEMPORAL_WEAPON_UNITS)
+      .filter((unit) => {
+        const target = unit.targetTile();
+        return unit.isActive() && target !== undefined && game.hasOwner(target) &&
+          game.owner(target) === me;
+      })
+      .map((unit) => ({
+        identity: String(unit.id()),
+        actorOwner: ownerSlot(unit.owner()),
+        unitType: unit.type(),
+        tile: unit.tile() as number,
+        targetTile: unit.targetTile() as number,
+      }))
+      .sort((a, b) => Number(a.identity) - Number(b.identity));
+    const alliances = me.alliances()
+      .map((alliance) => ({
+        identity: String(alliance.id()),
+        otherOwner: ownerSlot(alliance.other(me)),
+        createdAt: alliance.createdAt(),
+        expiresAt: alliance.expiresAt(),
+      }))
+      .sort((a, b) => a.otherOwner - b.otherOwner || a.identity.localeCompare(b.identity));
+    const incomingRequests = me.incomingAllianceRequests()
+      .map((request) => ({
+        identity: `${request.requestor().smallID()}:${request.createdAt()}`,
+        otherOwner: ownerSlot(request.requestor()),
+        createdAt: request.createdAt(),
+      }))
+      .sort((a, b) => a.otherOwner - b.otherOwner || a.createdAt - b.createdAt);
+    const outgoingRequests = me.outgoingAllianceRequests()
+      .map((request) => ({
+        identity: String(request.recipient().smallID()),
+        otherOwner: ownerSlot(request.recipient()),
+      }))
+      .sort((a, b) => a.otherOwner - b.otherOwner);
+    const embargoes = [
+      ...me.getEmbargoes().map((embargo) => ({
+        otherOwner: ownerSlot(embargo.target),
+        direction: "outgoing" as const,
+      })),
+      ...game.players()
+        .filter((player) => player !== me && player.hasEmbargoAgainst(me))
+        .map((player) => ({
+          otherOwner: ownerSlot(player),
+          direction: "incoming" as const,
+        })),
+    ]
+      .sort((a, b) => a.otherOwner - b.otherOwner);
+    const targets = [...new Set(me.transitiveTargets().map(ownerSlot))].sort((a, b) => a - b);
+    return {
+      version: "temporal-v1" as const,
+      schemaHash: TEMPORAL_V1_SCHEMA_HASH,
+      tick: game.ticks(),
+      width: game.width(),
+      height: game.height(),
+      latestSequence: latestIssued,
+      events,
+      current: { incomingAttacks, incomingWeapons },
+      diplomacy: { alliances, incomingRequests, outgoingRequests, embargoes, targets },
+    };
+  }
+
+  acknowledgeTemporalEvents(
+    cid: ClientID = this.clientID,
+    throughSequence: number,
+  ): number {
+    const events = this.temporalEventsByClient.get(cid) ?? [];
+    const latestIssued = (this.temporalNextSequenceByClient.get(cid) ?? 1) - 1;
+    if (!Number.isInteger(throughSequence) || throughSequence < 0 ||
+        throughSequence > latestIssued) {
+      throw new Error(
+        `invalid temporal-v1 acknowledgement ${throughSequence}; latest is ${latestIssued}`,
+      );
+    }
+    const remaining = events.filter((event) => event.sequence > throughSequence);
+    this.temporalEventsByClient.set(cid, remaining);
+    return remaining.length;
+  }
+
+  private resetTemporalBuffers(): void {
+    if (this.runner === null) return;
+    const game = this.runner.game;
+    const existingWeaponIDs = new Set(
+      game.units(...TEMPORAL_WEAPON_UNITS).map((unit) => unit.id()),
+    );
+    this.urgentResponsePendingByClient.clear();
+    for (const cid of this.controlledClientIDs) {
+      const me = game.playerByClientID(cid);
+      this.temporalEventsByClient.set(cid, []);
+      this.temporalNextSequenceByClient.set(cid, 1);
+      this.temporalSeenAttackIDsByClient.set(
+        cid,
+        new Set(me?.incomingAttacks().map((attack) => attack.id()) ?? []),
+      );
+      this.temporalSeenLaunchUnitIDsByClient.set(cid, new Set(existingWeaponIDs));
+      this.temporalSeenIncomingUnitIDsByClient.set(cid, new Set());
+    }
+  }
+
+  private captureTemporalUpdate(update: GameUpdateViewData): void {
+    if (this.runner === null || this.temporalEventsByClient.size === 0) return;
+    const game = this.runner.game;
+    for (const cid of this.controlledClientIDs) {
+      const me = game.playerByClientID(cid);
+      if (me === null) continue;
+      const selfSmallID = me.smallID();
+      const seenAttacks = this.temporalSeenAttackIDsByClient.get(cid)!;
+      const seenLaunches = this.temporalSeenLaunchUnitIDsByClient.get(cid)!;
+      const seenIncoming = this.temporalSeenIncomingUnitIDsByClient.get(cid)!;
+      const pending: Omit<TemporalEventV1, "sequence">[] = [];
+      const base = (
+        kind: TemporalEventKind,
+        identity: string,
+        actorOwner = 0,
+        targetOwner = 0,
+      ): Omit<TemporalEventV1, "sequence"> => ({
+        tick: update.tick, kind, identity, actorOwner, targetOwner,
+        amount: 0, tile: null, targetTile: null, unitType: null, accepted: null,
+      });
+
+      for (const playerUpdate of update.updates[GameUpdateType.Player]) {
+        if (playerUpdate.id !== me.id() || playerUpdate.incomingAttacks === undefined) continue;
+        for (const attack of playerUpdate.incomingAttacks) {
+          if (seenAttacks.has(attack.id)) continue;
+          seenAttacks.add(attack.id);
+          const event = base(
+            "incoming_attack", attack.id, attack.attackerID + 1, selfSmallID + 1,
+          );
+          event.amount = humanVisibleNumberFloor(Math.max(0, attack.troops) / 10) * 10;
+          pending.push(event);
+        }
+      }
+      for (const unitUpdate of update.updates[GameUpdateType.Unit]) {
+        if (!TEMPORAL_WEAPON_UNITS.has(unitUpdate.unitType) || !unitUpdate.isActive ||
+            seenLaunches.has(unitUpdate.id)) continue;
+        seenLaunches.add(unitUpdate.id);
+        const targetOwner = unitUpdate.targetTile !== undefined &&
+          game.hasOwner(unitUpdate.targetTile)
+          ? game.owner(unitUpdate.targetTile).smallID() + 1
+          : 0;
+        const event = base(
+          "weapon_launch", String(unitUpdate.id), unitUpdate.ownerID + 1, targetOwner,
+        );
+        event.tile = unitUpdate.pos as number;
+        event.targetTile = unitUpdate.targetTile ?? null;
+        event.unitType = unitUpdate.unitType;
+        pending.push(event);
+      }
+      for (const incoming of update.updates[GameUpdateType.UnitIncoming]) {
+        if (incoming.playerID !== selfSmallID || seenIncoming.has(incoming.unitID)) continue;
+        const unit = game.unit(incoming.unitID);
+        if (unit === undefined || !TEMPORAL_WEAPON_UNITS.has(unit.type())) continue;
+        seenIncoming.add(incoming.unitID);
+        const event = base(
+          "weapon_incoming", String(incoming.unitID),
+          unit.owner().smallID() + 1,
+          selfSmallID + 1,
+        );
+        event.tile = unit.tile() as number;
+        event.targetTile = unit.targetTile() ?? null;
+        event.unitType = unit.type();
+        pending.push(event);
+      }
+      for (const request of update.updates[GameUpdateType.AllianceRequest]) {
+        if (request.recipientID !== selfSmallID) continue;
+        pending.push(base(
+          "alliance_request", `${request.requestorID}:${request.createdAt}`,
+          request.requestorID + 1, selfSmallID + 1,
+        ));
+      }
+      for (const reply of update.updates[GameUpdateType.AllianceRequestReply]) {
+        const request = reply.request;
+        if (request.requestorID !== selfSmallID && request.recipientID !== selfSmallID) continue;
+        const event = base(
+          "alliance_reply", `${request.requestorID}:${request.recipientID}:${request.createdAt}`,
+          request.recipientID + 1, request.requestorID + 1,
+        );
+        event.accepted = reply.accepted;
+        pending.push(event);
+      }
+      for (const broken of update.updates[GameUpdateType.BrokeAlliance]) {
+        if (broken.traitorID !== selfSmallID && broken.betrayedID !== selfSmallID) continue;
+        pending.push(base(
+          "alliance_broken", String(broken.allianceID),
+          broken.traitorID + 1, broken.betrayedID + 1,
+        ));
+      }
+      for (const expired of update.updates[GameUpdateType.AllianceExpired]) {
+        if (expired.player1ID !== selfSmallID && expired.player2ID !== selfSmallID) continue;
+        pending.push(base(
+          "alliance_expired", `${expired.player1ID}:${expired.player2ID}`,
+          expired.player1ID + 1, expired.player2ID + 1,
+        ));
+      }
+      const allianceIDs = new Set(me.alliances().map((alliance) => alliance.id()));
+      for (const extension of update.updates[GameUpdateType.AllianceExtension]) {
+        if (extension.playerID !== selfSmallID || !allianceIDs.has(extension.allianceID)) continue;
+        pending.push(base(
+          "alliance_extension", `${extension.allianceID}:${extension.playerID}`,
+          extension.playerID + 1, selfSmallID + 1,
+        ));
+      }
+      for (const embargo of update.updates[GameUpdateType.EmbargoEvent]) {
+        if (embargo.playerID !== selfSmallID && embargo.embargoedID !== selfSmallID) continue;
+        pending.push(base(
+          embargo.event === "start" ? "embargo_start" : "embargo_stop",
+          `${embargo.playerID}:${embargo.embargoedID}:${embargo.event}`,
+          embargo.playerID + 1, embargo.embargoedID + 1,
+        ));
+      }
+      for (const target of update.updates[GameUpdateType.TargetPlayer]) {
+        const sender = game.playerBySmallID(target.playerID);
+        if (!sender.isPlayer() || !me.isFriendly(sender)) continue;
+        pending.push(base(
+          "target_player", `${target.playerID}:${target.targetID}`,
+          target.playerID + 1, target.targetID + 1,
+        ));
+      }
+      for (const donation of update.updates[GameUpdateType.DonateEvent]) {
+        if (donation.senderId !== me.id() && donation.recipientId !== me.id()) continue;
+        const sender = game.player(donation.senderId);
+        const recipient = game.player(donation.recipientId);
+        const event = base(
+          donation.donationType === "gold" ? "donation_gold" : "donation_troops",
+          `${donation.senderId}:${donation.recipientId}:${update.tick}:${donation.donationType}`,
+          sender.smallID() + 1, recipient.smallID() + 1,
+        );
+        event.amount = donation.donationType === "gold"
+          ? humanVisibleNumberFloor(Number(donation.amount))
+          : humanVisibleNumberFloor(Number(donation.amount) / 10) * 10;
+        pending.push(event);
+      }
+      pending.sort((a, b) =>
+        a.tick - b.tick || a.kind.localeCompare(b.kind) || a.identity.localeCompare(b.identity),
+      );
+      const events = this.temporalEventsByClient.get(cid)!;
+      let sequence = this.temporalNextSequenceByClient.get(cid)!;
+      for (const event of pending) {
+        events.push({ sequence: sequence++, ...event });
+        if (event.kind === "incoming_attack" || event.kind === "weapon_incoming") {
+          this.urgentResponsePendingByClient.add(cid);
+        }
+      }
+      this.temporalNextSequenceByClient.set(cid, sequence);
+    }
+  }
+
+  /** Human-visible precision-v3 semantic state. The global 128x128 map keeps
+   * strategic geometry; exact, sorted frontier TileRefs and caller-requested
+   * native patches preserve targeting precision without transferring the full
+   * native ownership grid every decision. */
+  precisionObservationV3(
+    cid: ClientID = this.clientID,
+    localTiles: number[] = [],
+    localRadius = 2,
+  ): {
+    version: "precision-v3";
+    schemaHash: string;
+    width: number;
+    height: number;
+    global: { planes: string[]; size: number; dtype: "uint8"; data: string };
+    frontier: {
+      count: number;
+      tileDtype: "int32-le";
+      ownerDtype: "uint8";
+      tiles: string;
+      owners: string;
+    };
+    local: {
+      radius: number;
+      size: number;
+      count: number;
+      planes: string[];
+      dtype: "uint8";
+      centerTileDtype: "int32-le";
+      centerTiles: string;
+      data: string;
+    };
+  } {
+    const game = this.requireRunner().game;
+    const me = game.playerByClientID(cid);
+    const width = game.width();
+    const height = game.height();
+    const size = PRECISION_V3_SIZE;
+    const cellCount = size * size;
+    const tileCount = width * height;
+    const cache = this.getPrecisionV3Cache();
+    const global = cache.staticPlanes.slice();
+    const landDenom = cache.landDenom;
+    const own = new Uint32Array(cellCount);
+    const opponent = new Uint32Array(cellCount);
+    const dominantCount = new Uint32Array(cellCount);
+    const dominantOwner = new Uint8Array(cellCount);
+    const cellByTile = cache.cellByTile;
+    const ownerCellCount = new Uint32Array(cellCount);
+    const touchedCells: number[] = [];
+    const plane = (name: (typeof PRECISION_V3_PLANES)[number]) =>
+      PRECISION_V3_PLANES.indexOf(name) * cellCount;
+
+    if (game.numTilesWithFallout() > 0) {
+      game.forEachTile((tile) => {
+        if (game.hasFallout(tile)) {
+          global[plane("falloutPresence") + cellByTile[tile]] = 255;
+        }
+      });
+    }
+
+    const frontierRows: Array<{ tile: number; owner: number }> = [];
+    for (const owner of game.players()) {
+      touchedCells.length = 0;
+      const isSelf = owner.id() === me?.id();
+      for (const tile of owner.tiles()) {
+        const cell = cellByTile[tile];
+        if (ownerCellCount[cell]++ === 0) touchedCells.push(cell);
+        if (isSelf) own[cell]++;
+        else opponent[cell]++;
+      }
+      for (const cell of touchedCells) {
+        if (ownerCellCount[cell] > dominantCount[cell]) {
+          dominantCount[cell] = ownerCellCount[cell];
+          dominantOwner[cell] = Math.min(255, owner.smallID() + 1);
+        }
+        ownerCellCount[cell] = 0;
+      }
+      for (const tile of owner.borderTiles()) {
+        frontierRows.push({ tile: tile as number, owner: owner.smallID() });
+        global[plane("frontierPresence") + cellByTile[tile]] = 255;
+      }
+    }
+    frontierRows.sort((a, b) => a.tile - b.tile || a.owner - b.owner);
+
+    for (let cell = 0; cell < cellCount; cell++) {
+      const d = Math.max(1, landDenom[cell]);
+      global[plane("ownFraction") + cell] = Math.round((own[cell] / d) * 255);
+      global[plane("opponentFraction") + cell] = Math.round((opponent[cell] / d) * 255);
+      const neutral = Math.max(0, landDenom[cell] - own[cell] - opponent[cell]);
+      global[plane("neutralFraction") + cell] = Math.round((neutral / d) * 255);
+      global[plane("dominantOwnerSmallID") + cell] = dominantOwner[cell];
+    }
+
+    const frontierTiles = new Int32Array(frontierRows.map((row) => row.tile));
+    const frontierOwners = new Uint8Array(frontierRows.map((row) => row.owner));
+    if (localRadius !== 2) {
+      throw new Error("precision-v3 localRadius is fixed at 2");
+    }
+    const radius = 2;
+    const patchSize = radius * 2 + 1;
+    const localPlaneSize = patchSize * patchSize;
+    const local = new Uint8Array(
+      localTiles.length * PRECISION_V3_LOCAL_PLANES.length * localPlaneSize,
+    );
+    const localPlane = (patch: number, channel: number) =>
+      (patch * PRECISION_V3_LOCAL_PLANES.length + channel) * localPlaneSize;
+    localTiles.forEach((centerValue, patch) => {
+      const center = Math.floor(centerValue);
+      if (centerValue !== center || center < 0 || center >= tileCount) {
+        throw new Error(`invalid precision-v3 local center TileRef ${centerValue}`);
+      }
+      const cx = game.x(center as TileRef);
+      const cy = game.y(center as TileRef);
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const px = cx + dx;
+          const py = cy + dy;
+          const at = (dy + radius) * patchSize + dx + radius;
+          if (px < 0 || px >= width || py < 0 || py >= height) continue;
+          const tile = game.ref(px, py);
+          const set = (channel: number, value: number) => {
+            local[localPlane(patch, channel) + at] = value;
+          };
+          set(0, 1);
+          const land = game.isLand(tile);
+          set(land ? 1 : 2, 1);
+          if (game.terrainType(tile) === TerrainType.Highland) set(3, 1);
+          if (game.terrainType(tile) === TerrainType.Mountain) set(4, 1);
+          if (game.isShore(tile)) set(5, 1);
+          if (game.hasFallout(tile)) set(6, 1);
+          if (!game.hasOwner(tile)) {
+            if (land) set(7, 1);
+          } else {
+            const owner = game.owner(tile);
+            set(owner === me ? 8 : 9, 1);
+            set(10, Math.min(255, owner.smallID() + 1));
+          }
+        }
+      }
+    });
+    const centers = Int32Array.from(localTiles.map((tile) => Math.floor(tile)));
+
+    return {
+      version: "precision-v3",
+      schemaHash: PRECISION_V3_SCHEMA_HASH,
+      width,
+      height,
+      global: {
+        planes: [...PRECISION_V3_PLANES],
+        size,
+        dtype: "uint8",
+        data: Buffer.from(global.buffer).toString("base64"),
+      },
+      frontier: {
+        count: frontierRows.length,
+        tileDtype: "int32-le",
+        ownerDtype: "uint8",
+        tiles: Buffer.from(frontierTiles.buffer).toString("base64"),
+        owners: Buffer.from(frontierOwners.buffer).toString("base64"),
+      },
+      local: {
+        radius,
+        size: patchSize,
+        count: localTiles.length,
+        planes: [...PRECISION_V3_LOCAL_PLANES],
+        dtype: "uint8",
+        centerTileDtype: "int32-le",
+        centerTiles: Buffer.from(centers.buffer).toString("base64"),
+        data: Buffer.from(local.buffer).toString("base64"),
+      },
+    };
+  }
+
+  private getPrecisionV3Cache(): PrecisionV3Cache {
+    const game = this.requireRunner().game;
+    const width = game.width();
+    const height = game.height();
+    // Land count changes on the impact tick; waterGraphVersion may lag until
+    // the throttled navigation rebuild up to 20 ticks later.
+    const terrainVersion = game.numLandTiles();
+    if (
+      this.precisionV3Cache !== null &&
+      this.precisionV3Cache.width === width &&
+      this.precisionV3Cache.height === height &&
+      this.precisionV3Cache.terrainVersion === terrainVersion
+    ) {
+      return this.precisionV3Cache;
+    }
+    const size = PRECISION_V3_SIZE;
+    const cellCount = size * size;
+    const cellByTile = new Int32Array(width * height);
+    const landDenom = new Uint32Array(cellCount);
+    const staticPlanes = new Uint8Array(PRECISION_V3_PLANES.length * cellCount);
+    const offset = (name: (typeof PRECISION_V3_PLANES)[number]) =>
+      PRECISION_V3_PLANES.indexOf(name) * cellCount;
+    game.forEachTile((tile) => {
+      const cell = Math.min(size - 1, Math.floor((game.y(tile) / height) * size)) * size +
+        Math.min(size - 1, Math.floor((game.x(tile) / width) * size));
+      cellByTile[tile] = cell;
+      if (game.isLand(tile)) {
+        landDenom[cell]++;
+        staticPlanes[offset("landPresence") + cell] = 255;
+      } else staticPlanes[offset("waterPresence") + cell] = 255;
+      if (game.terrainType(tile) === TerrainType.Highland) {
+        staticPlanes[offset("highlandPresence") + cell] = 255;
+      }
+      if (game.terrainType(tile) === TerrainType.Mountain) {
+        staticPlanes[offset("mountainPresence") + cell] = 255;
+      }
+      if (game.isShore(tile)) staticPlanes[offset("shorePresence") + cell] = 255;
+    });
+    this.precisionV3Cache = {
+      width, height, terrainVersion, cellByTile, landDenom, staticPlanes,
+    };
+    return this.precisionV3Cache;
   }
 
   /**
@@ -906,12 +2552,25 @@ export class OpenFrontGymEnv {
 
     // Advance the simulation once (intents applied on the first micro-tick).
     const simStarted = performance.now();
-    for (let i = 0; i < this.config.decisionInterval; i++) {
+    const respondingClients = this.config.urgentEventYield
+      ? [...this.urgentResponsePendingByClient]
+      : [];
+    for (const cid of respondingClients) this.urgentResponsePendingByClient.delete(cid);
+    const maxMicroTicks = respondingClients.length > 0 ? 1 : this.config.decisionInterval;
+    let ticksAdvanced = 0;
+    let urgentYield = false;
+    for (let i = 0; i < maxMicroTicks; i++) {
       if (this.isDone()) break;
       this.enqueueTurn(i === 0 ? stampedIntents : []);
       this.runner!.executeNextTick();
+      ticksAdvanced++;
       if (this.lastError !== null) {
         throw new Error(this.lastError.errMsg);
+      }
+      if (this.config.urgentEventYield && respondingClients.length === 0 &&
+          this.urgentResponsePendingByClient.size > 0) {
+        urgentYield = true;
+        break;
       }
     }
     const simMs = performance.now() - simStarted;
@@ -948,6 +2607,12 @@ export class OpenFrontGymEnv {
         turnNumber: this.turnNumber,
         tick: this.runner?.game.ticks() ?? 0,
         simMs,
+        ticksAdvanced,
+        urgentYield,
+        urgentResponseTick: respondingClients.length > 0,
+        urgentClients: urgentYield
+          ? [...this.urgentResponsePendingByClient]
+          : respondingClients,
         totalMs: performance.now() - started,
         liveOpponents: this.liveOpponentCounts(),
       },
@@ -970,6 +2635,146 @@ export class OpenFrontGymEnv {
         rawIntentReasons: prepared.reasons,
       },
     );
+  }
+
+  stepIntentsLean(intents: Intent[]) {
+    const started = performance.now();
+    this.requireRunner();
+    const prepared = this.prepareRawIntents(intents.slice(0, MAX_RAW_INTENTS_PER_STEP));
+    const rewardAdjustment = prepared.accepted * 0.01 - prepared.rejected * 0.05;
+    const before = this.previousMetrics ?? this.metrics();
+    const respondingClients = this.config.urgentEventYield
+      ? [...this.urgentResponsePendingByClient]
+      : [];
+    for (const cid of respondingClients) this.urgentResponsePendingByClient.delete(cid);
+    const maxMicroTicks = respondingClients.length > 0 ? 1 : this.config.decisionInterval;
+    const simStarted = performance.now();
+    let ticksAdvanced = 0;
+    let urgentYield = false;
+    for (let i = 0; i < maxMicroTicks; i++) {
+      if (this.isDone()) break;
+      this.enqueueTurn(i === 0 ? prepared.stamped : []);
+      this.runner!.executeNextTick();
+      ticksAdvanced++;
+      if (this.lastError !== null) throw new Error(this.lastError.errMsg);
+      if (this.config.urgentEventYield && respondingClients.length === 0 &&
+          this.urgentResponsePendingByClient.size > 0) {
+        urgentYield = true;
+        break;
+      }
+    }
+    const simMs = performance.now() - simStarted;
+    const after = this.metrics();
+    const reward = this.reward(before, after) + rewardAdjustment;
+    this.previousMetrics = after;
+    this.decisionNumber++;
+    const observation = this.leanObservationV3(this.clientID);
+    const winner = this.winner();
+    return {
+      observation,
+      reward,
+      done: this.isDone(),
+      info: {
+        map: this.config.map,
+        difficulty: this.config.difficulty,
+        winner,
+        won: isWinnerForClient(winner, this.clientID),
+        turnNumber: this.turnNumber,
+        tick: this.runner?.game.ticks() ?? 0,
+        liveOpponents: this.liveOpponentCounts(),
+        expectedOpponents: this.expectedOpponentCounts(),
+        maxTurnNumber: this.maxTurnNumber,
+        rawIntentAccepted: prepared.accepted,
+        rawIntentRejected: prepared.rejected,
+        rawIntentReasons: prepared.reasons,
+        urgentYield,
+        urgentResponseTick: respondingClients.length > 0,
+        urgentClients: urgentYield
+          ? [...this.urgentResponsePendingByClient]
+          : respondingClients,
+        timings: {
+          simMs,
+          ticksAdvanced,
+          totalMs: performance.now() - started,
+        },
+      },
+    };
+  }
+
+  stepReplayTakeoverLean(
+    intents: Intent[],
+    recordedTurns: StampedIntent[][],
+  ) {
+    const started = performance.now();
+    this.requireRunner();
+    const prepared = this.prepareRawIntents(intents.slice(0, MAX_RAW_INTENTS_PER_STEP));
+    const rewardAdjustment = prepared.accepted * 0.01 - prepared.rejected * 0.05;
+    const before = this.previousMetrics ?? this.metrics();
+    const respondingClients = this.config.urgentEventYield
+      ? [...this.urgentResponsePendingByClient]
+      : [];
+    for (const cid of respondingClients) this.urgentResponsePendingByClient.delete(cid);
+    const maxMicroTicks = respondingClients.length > 0 ? 1 : this.config.decisionInterval;
+    const simStarted = performance.now();
+    let ticksAdvanced = 0;
+    let opponentIntentsApplied = 0;
+    let urgentYield = false;
+    for (let i = 0; i < maxMicroTicks; i++) {
+      if (this.isDone()) break;
+      const opponents = (recordedTurns[i] ?? []).filter(
+        (intent) => intent.clientID !== this.clientID,
+      );
+      opponentIntentsApplied += opponents.length;
+      this.enqueueTurn([
+        ...(i === 0 ? prepared.stamped : []),
+        ...opponents,
+      ]);
+      this.runner!.executeNextTick();
+      ticksAdvanced++;
+      if (this.lastError !== null) throw new Error(this.lastError.errMsg);
+      if (this.config.urgentEventYield && respondingClients.length === 0 &&
+          this.urgentResponsePendingByClient.size > 0) {
+        urgentYield = true;
+        break;
+      }
+    }
+    const simMs = performance.now() - simStarted;
+    const after = this.metrics();
+    const reward = this.reward(before, after) + rewardAdjustment;
+    this.previousMetrics = after;
+    this.decisionNumber++;
+    const observation = this.leanObservationV3(this.clientID);
+    const winner = this.winner();
+    return {
+      observation,
+      reward,
+      done: this.isDone(),
+      info: {
+        map: this.config.map,
+        difficulty: this.config.difficulty,
+        winner,
+        won: isWinnerForClient(winner, this.clientID),
+        turnNumber: this.turnNumber,
+        tick: this.runner?.game.ticks() ?? 0,
+        liveOpponents: this.liveOpponentCounts(),
+        expectedOpponents: this.expectedOpponentCounts(),
+        maxTurnNumber: this.maxTurnNumber,
+        rawIntentAccepted: prepared.accepted,
+        rawIntentRejected: prepared.rejected,
+        rawIntentReasons: prepared.reasons,
+        opponentIntentsApplied,
+        urgentYield,
+        urgentResponseTick: respondingClients.length > 0,
+        urgentClients: urgentYield
+          ? [...this.urgentResponsePendingByClient]
+          : respondingClients,
+        timings: {
+          simMs,
+          ticksAdvanced,
+          totalMs: performance.now() - started,
+        },
+      },
+    };
   }
 
   stepRaw(slots: RawActionSlot[]): HeadlessStepResult {
@@ -1107,19 +2912,24 @@ export class OpenFrontGymEnv {
       return { reason: `${intent.type}:not_spawned_or_dead` };
     }
     if (intent.type === "attack") {
+      const requestedTroops = Math.floor(intent.troops ?? 1);
+      if (!Number.isFinite(requestedTroops) || requestedTroops < 1 ||
+          requestedTroops > Math.floor(player.troops())) {
+        return { reason: "attack:invalid_troops" };
+      }
       if (intent.targetID === null) {
         if (!hasLandBorderWithTerraNullius(game, player)) {
           return { reason: "attack:terra_not_bordering" };
         }
-        return { intent };
+        return { intent: { ...intent, troops: requestedTroops } };
       }
       if (!game.hasPlayer(intent.targetID)) return { reason: "attack:missing_target" };
       const target = game.player(intent.targetID);
       if (!target.isAlive()) return { reason: "attack:target_dead" };
-      if (!player.canAttackPlayer(target, true)) {
+      if (!player.sharesBorderWith(target) || !player.canAttackPlayer(target, true)) {
         return { reason: "attack:cannot_attack_target" };
       }
-      return { intent };
+      return { intent: { ...intent, troops: requestedTroops } };
     }
     if (intent.type === "boat") {
       if (game.config().isUnitDisabled(UnitType.TransportShip)) {
@@ -1133,7 +2943,11 @@ export class OpenFrontGymEnv {
       if (player.canBuild(UnitType.TransportShip, intent.dst) === false) {
         return { reason: "boat:unreachable_or_limit" };
       }
-      return { intent };
+      const troops = Math.floor(intent.troops);
+      if (!Number.isFinite(troops) || troops < 1 || troops > Math.floor(player.troops())) {
+        return { reason: "boat:invalid_troops" };
+      }
+      return { intent: { ...intent, troops } };
     }
     if (intent.type === "build_unit") {
       if (!PlayerBuildable.has(intent.unit)) return { reason: "build:invalid_unit" };
@@ -1143,21 +2957,62 @@ export class OpenFrontGymEnv {
       }
       const spawnTile = player.canBuild(intent.unit, intent.tile);
       if (spawnTile === false) return { reason: `build:${intent.unit}:cannot_build_here` };
+      if (
+        !TARGET_PRESERVING_BUILD_UNITS.has(intent.unit) &&
+        spawnTile !== intent.tile
+      ) {
+        return { reason: `build:${intent.unit}:stale_exact_tile` };
+      }
       return {
         intent: {
           ...intent,
-          tile: spawnTile,
+          // Nukes and warships return a SOURCE silo/port from canBuild.
+          // ConstructionExecution needs the requested TARGET and independently
+          // resolves that source again.
+          tile: intent.tile,
         },
       };
     }
     if (intent.type === "cancel_attack") {
-      if (!player.outgoingAttacks().some((attack) => attack.id() === intent.attackID)) {
+      if (!player.outgoingAttacks().some(
+        (attack) => attack.id() === intent.attackID && !attack.retreating(),
+      )) {
         return { reason: "cancel_attack:missing_attack" };
       }
       return { intent };
     }
+    if (intent.type === "upgrade_structure") {
+      const unit = game.unit(intent.unitId);
+      if (
+        unit === undefined ||
+        unit.owner() !== player ||
+        unit.type() !== intent.unit ||
+        !player.canUpgradeUnit(unit)
+      ) {
+        return { reason: "upgrade_structure:missing_or_unavailable_unit" };
+      }
+      return { intent };
+    }
+    if (intent.type === "delete_unit") {
+      const unit = game.unit(intent.unitId);
+      if (
+        unit === undefined ||
+        unit.owner() !== player ||
+        !unit.isActive() ||
+        unit.isMarkedForDeletion() ||
+        !game.isLand(unit.tile()) ||
+        game.owner(unit.tile()) !== player ||
+        !player.canDeleteUnit()
+      ) {
+        return { reason: "delete_unit:missing_or_unavailable_unit" };
+      }
+      return { intent };
+    }
     if (intent.type === "cancel_boat") {
-      if (!player.units(UnitType.TransportShip).some((unit) => unit.id() === intent.unitID)) {
+      if (!player.units(UnitType.TransportShip).some(
+        (unit) => unit.id() === intent.unitID &&
+          !unit.transportShipState().isRetreating,
+      )) {
         return { reason: "cancel_boat:missing_boat" };
       }
       return { intent };
@@ -1167,10 +3022,125 @@ export class OpenFrontGymEnv {
         return { reason: "move_warship:invalid_water_tile" };
       }
       const ownedWarships = new Set(
-        player.units(UnitType.Warship).map((unit) => unit.id()),
+        player.units(UnitType.Warship).filter((unit) => unit.isActive())
+          .map((unit) => unit.id()),
       );
-      if (!intent.unitIds.some((unitID) => ownedWarships.has(unitID))) {
+      if (intent.unitIds.length === 0 || !intent.unitIds.every((unitID) => ownedWarships.has(unitID))) {
         return { reason: "move_warship:missing_warship" };
+      }
+      if (intent.unitIds.some((unitID) => {
+        const unit = game.unit(unitID)!;
+        return intent.tile === unit.tile() ||
+          intent.tile === unit.warshipState().patrolTile;
+      })) return { reason: "move_warship:stale_or_current_target" };
+      const targetComponent = game.getWaterComponent(intent.tile);
+      if (targetComponent === null || !intent.unitIds.every((unitID) => {
+        const unit = game.unit(unitID)!;
+        return game.getWaterComponent(unit.tile()) === targetComponent;
+      })) return { reason: "move_warship:unreachable_component" };
+      return { intent };
+    }
+    if (intent.type === "allianceRequest") {
+      if (!game.hasPlayer(intent.recipient) ||
+          !player.canSendAllianceRequest(game.player(intent.recipient))) {
+        return { reason: "allianceRequest:unavailable_recipient" };
+      }
+      return { intent };
+    }
+    if (intent.type === "allianceExtension") {
+      if (!game.hasPlayer(intent.recipient)) return { reason: "allianceExtension:missing_recipient" };
+      if (player.allianceInfo(game.player(intent.recipient))?.canExtend !== true) {
+        return { reason: "allianceExtension:unavailable" };
+      }
+      return { intent };
+    }
+    if (intent.type === "allianceReject") {
+      if (!player.incomingAllianceRequests().some(
+        (request) => request.requestor().id() === intent.requestor,
+      )) return { reason: "allianceReject:missing_request" };
+      return { intent };
+    }
+    if (intent.type === "breakAlliance") {
+      if (!game.hasPlayer(intent.recipient) ||
+          player.allianceWith(game.player(intent.recipient)) === null) {
+        return { reason: "breakAlliance:missing_alliance" };
+      }
+      return { intent };
+    }
+    if (intent.type === "targetPlayer") {
+      if (!game.hasPlayer(intent.target) || !player.canTarget(game.player(intent.target))) {
+        return { reason: "targetPlayer:unavailable_target" };
+      }
+      return { intent };
+    }
+    if (intent.type === "embargo") {
+      if (intent.action !== "start" && intent.action !== "stop") {
+        return { reason: "embargo:invalid_action" };
+      }
+      if (!game.hasPlayer(intent.targetID) || game.player(intent.targetID) === player) {
+        return { reason: "embargo:missing_target" };
+      }
+      const target = game.player(intent.targetID);
+      const active = player.hasEmbargoAgainst(target);
+      if ((intent.action === "start" && active) || (intent.action === "stop" && !active)) {
+        return { reason: "embargo:stale_action" };
+      }
+      return { intent };
+    }
+    if (intent.type === "donate_gold") {
+      if (!game.hasPlayer(intent.recipient)) return { reason: "donate_gold:missing_recipient" };
+      const recipient = game.player(intent.recipient);
+      if (!player.canDonateGold(recipient)) return { reason: "donate_gold:unavailable" };
+      const max = Math.max(0, Number(player.gold()));
+      const requested = intent.gold ?? Math.floor(max / 3);
+      if (!Number.isFinite(requested) || max < 1 || requested < 1 || requested > max) {
+        return { reason: "donate_gold:invalid_amount" };
+      }
+      return { intent: { ...intent, gold: Math.floor(requested) } };
+    }
+    if (intent.type === "donate_troops") {
+      if (!game.hasPlayer(intent.recipient)) return { reason: "donate_troops:missing_recipient" };
+      const recipient = game.player(intent.recipient);
+      if (!player.canDonateTroops(recipient)) return { reason: "donate_troops:unavailable" };
+      const max = Math.max(0, Math.floor(player.troops()));
+      const requested = intent.troops ?? game.config().defaultDonationAmount(player);
+      if (!Number.isFinite(requested) || max < 1 || requested < 1 || requested > max) {
+        return { reason: "donate_troops:invalid_amount" };
+      }
+      return { intent: { ...intent, troops: Math.floor(requested) } };
+    }
+    if (intent.type === "emoji") {
+      const recipient = intent.recipient === AllPlayers
+        ? AllPlayers
+        : game.hasPlayer(intent.recipient) ? game.player(intent.recipient) : null;
+      if (recipient === null || recipient === player || !player.canSendEmoji(recipient)) {
+        return { reason: "emoji:unavailable_recipient" };
+      }
+      if (!(EMOJIS as readonly number[]).includes(intent.emoji)) {
+        return { reason: "emoji:unsupported_value" };
+      }
+      return { intent };
+    }
+    if (intent.type === "quick_chat") {
+      if (!game.hasPlayer(intent.recipient)) {
+        return { reason: "quick_chat:missing_recipient" };
+      }
+      const recipient = game.player(intent.recipient);
+      if (recipient === player || !player.canSendQuickChat(recipient)) {
+        return { reason: "quick_chat:unavailable_recipient" };
+      }
+      const entry = QUICK_CHAT_KEYS.find((option) => option.key === intent.quickChatKey);
+      if (entry === undefined) return { reason: "quick_chat:unsupported_key" };
+      if (entry.requiresPlayer &&
+          (intent.target === undefined || !game.hasPlayer(intent.target))) {
+        return { reason: "quick_chat:missing_target" };
+      }
+      return { intent };
+    }
+    if (intent.type === "embargo_all") {
+      if ((intent.action !== "start" && intent.action !== "stop") ||
+          !player.canEmbargoAll()) {
+        return { reason: "embargo_all:unavailable" };
       }
       return { intent };
     }
@@ -1233,12 +3203,25 @@ export class OpenFrontGymEnv {
     const before = this.previousMetrics ?? this.metrics();
     const preMetricsMs = performance.now() - metricsStarted;
     const simStarted = performance.now();
-    for (let i = 0; i < this.config.decisionInterval; i++) {
+    const respondingClients = this.config.urgentEventYield
+      ? [...this.urgentResponsePendingByClient]
+      : [];
+    for (const cid of respondingClients) this.urgentResponsePendingByClient.delete(cid);
+    const maxMicroTicks = respondingClients.length > 0 ? 1 : this.config.decisionInterval;
+    let ticksAdvanced = 0;
+    let urgentYield = false;
+    for (let i = 0; i < maxMicroTicks; i++) {
       if (this.isDone()) break;
       this.enqueueTurn(i === 0 ? stampedIntents : []);
       this.runner!.executeNextTick();
+      ticksAdvanced++;
       if (this.lastError !== null) {
         throw new Error(this.lastError.errMsg);
+      }
+      if (this.config.urgentEventYield && respondingClients.length === 0 &&
+          this.urgentResponsePendingByClient.size > 0) {
+        urgentYield = true;
+        break;
       }
     }
     const simMs = performance.now() - simStarted;
@@ -1256,9 +3239,17 @@ export class OpenFrontGymEnv {
         preMetricsMs,
         simMs,
         rewardMs,
+        ticksAdvanced,
       },
       started,
-      extraInfo,
+      {
+        ...extraInfo,
+        urgentYield,
+        urgentResponseTick: respondingClients.length > 0,
+        urgentClients: urgentYield
+          ? [...this.urgentResponsePendingByClient]
+          : respondingClients,
+      },
     );
   }
 
@@ -1266,24 +3257,65 @@ export class OpenFrontGymEnv {
     return this.actionTranscript;
   }
 
+  executionTranscript(): ExecutionTranscriptEntry[] {
+    return this.nativeExecutionTranscript;
+  }
+
+  private captureExecution(tick: number, execution: Execution): void {
+    if (
+      this.nativeExecutionTranscript.length >= MAX_EXECUTION_TRANSCRIPT_ENTRIES
+    ) {
+      return;
+    }
+    const fields: ExecutionTranscriptEntry["fields"] = {};
+    for (const [name, value] of Object.entries(
+      execution as unknown as Record<string, unknown>,
+    )) {
+      if (
+        value === null ||
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean"
+      ) {
+        fields[name] = value;
+        continue;
+      }
+      if (typeof value !== "object") continue;
+      const player = value as Partial<Player>;
+      if (typeof player.isPlayer !== "function" || !player.isPlayer()) continue;
+      fields[name] = {
+        id: player.id!(),
+        smallID: player.smallID!(),
+        type: player.type!(),
+        clientID: player.clientID!(),
+        displayName: player.displayName!(),
+      };
+    }
+    this.nativeExecutionTranscript.push({
+      tick,
+      type: execution.constructor.name,
+      fields,
+    });
+  }
+
   gameRecord(): GameRecord {
     const runner = this.requireRunner();
     if (this.gameStartInfo === null) {
       throw new Error("environment has not been reset");
     }
-    const stats = runner.game.stats().stats()[this.clientID];
-    const playerRecord: PlayerRecord = {
-      clientID: this.clientID,
-      username: USERNAME,
+    const allStats = runner.game.stats().stats();
+    const playerRecords: PlayerRecord[] = this.controlledClientIDs.map((clientID) => ({
+      clientID,
+      username: clientID === this.clientID ? USERNAME : clientID,
       clanTag: null,
       persistentID: null,
-      stats,
-    };
+      stats: allStats[clientID],
+    }));
     const end = this.startedAt + this.turnNumber * 100;
     const partial = createPartialGameRecord(
       this.gameStartInfo.gameID,
       this.gameStartInfo.config,
-      [playerRecord],
+      playerRecords,
       this.turns,
       this.startedAt,
       end,
@@ -1429,11 +3461,7 @@ export class OpenFrontGymEnv {
     const metrics = this.metrics(cid);
     const observeMetricsMs = performance.now() - metricsStarted;
     const playersStarted = performance.now();
-    const players = game
-      .players()
-      .slice()
-      .sort((a, b) => b.numTilesOwned() - a.numTilesOwned())
-      .slice(0, this.config.maxPlayers)
+    const players = this.policyPlayers(cid)
       .map((player) => summarizePlayer(player, me?.id() ?? null));
     const observePlayersMs = performance.now() - playersStarted;
     const spatialStarted = performance.now();
@@ -1457,8 +3485,8 @@ export class OpenFrontGymEnv {
         vector: [
           metrics.myShare,
           metrics.myTiles / Math.max(1, game.numLandTiles()),
-          metrics.troops / 10_000_000,
-          metrics.gold / 10_000_000,
+          (humanVisibleNumberFloor(metrics.troops / 10) * 10) / 10_000_000,
+          humanVisibleNumberFloor(metrics.gold) / 10_000_000,
           metrics.rank / Math.max(1, game.players().length),
           metrics.enemiesAlive / Math.max(1, game.players().length - 1),
           game.inSpawnPhase() ? 1 : 0,
@@ -1643,6 +3671,7 @@ export class OpenFrontGymEnv {
   }
 
   private generateCandidates(cid: ClientID = this.clientID): ActionCandidate[] {
+    this.legacyCandidateGenerationCount++;
     const runner = this.requireRunner();
     const game = runner.game;
     const player = game.playerByClientID(cid);
@@ -1936,7 +3965,15 @@ export class OpenFrontGymEnv {
           performance.now() - started,
         );
         if (canBuild === false) continue;
-        this.addBuildIntentCandidate(add, game, seen, unitType, canBuild);
+        // Nukes and warships return a source silo/port from canBuild, not the
+        // requested target. Preserve the probed target in the wire intent.
+        this.addBuildIntentCandidate(
+          add,
+          game,
+          seen,
+          unitType,
+          TARGET_PRESERVING_BUILD_UNITS.has(unitType) ? tile : canBuild,
+        );
       }
     }
   }
@@ -2327,6 +4364,43 @@ export class OpenFrontGymEnv {
     return tiles;
   }
 
+  private tileBitset(tiles: readonly TileRef[]) {
+    const game = this.requireRunner().game;
+    const tileCount = game.width() * game.height();
+    const bits = new Uint8Array(Math.ceil(tileCount / 8));
+    for (const tile of tiles) bits[tile >> 3] |= 1 << (tile & 7);
+    return {
+      count: tiles.length,
+      tileCount,
+      dtype: "bitset-deflate-raw" as const,
+      data: tiles.length === 0
+        ? ""
+        : Buffer.from(deflateRawSync(bits, { level: 1 })).toString("base64"),
+    };
+  }
+
+  private waterTilesByComponent(): Map<number, TileRef[]> {
+    const game = this.requireRunner().game;
+    const version = game.waterGraphVersion();
+    if (this.waterTilesByComponentCache !== null &&
+        this.waterComponentCacheVersion === version) {
+      return this.waterTilesByComponentCache;
+    }
+    const components = new Map<number, TileRef[]>();
+    game.forEachTile((tile) => {
+      if (!game.isWater(tile)) return;
+      const component = game.getWaterComponent(tile);
+      if (component === null) return;
+      const tiles = components.get(component) ?? [];
+      tiles.push(tile);
+      components.set(component, tiles);
+    });
+    this.waterTilesByComponentCache = components;
+    this.waterComponentCacheVersion = version;
+    this.waterComponentBitsetsCache = new Map();
+    return components;
+  }
+
   private interestingLandTiles(): TileRef[] {
     const game = this.requireRunner().game;
     const tiles: TileRef[] = [];
@@ -2339,13 +4413,19 @@ export class OpenFrontGymEnv {
   }
 
   private shoreLandTiles(): TileRef[] {
-    if (this.shoreLandTilesCache !== null) return this.shoreLandTilesCache;
     const game = this.requireRunner().game;
+    // Immediate terrain signature for land-to-water nuclear conversion.
+    const version = game.numLandTiles();
+    if (this.shoreLandTilesCache !== null &&
+        this.shoreLandTilesCacheVersion === version) {
+      return this.shoreLandTilesCache;
+    }
     const tiles: TileRef[] = [];
     game.forEachTile((tile) => {
       if (game.isLand(tile) && game.isShore(tile)) tiles.push(tile);
     });
     this.shoreLandTilesCache = tiles;
+    this.shoreLandTilesCacheVersion = version;
     return tiles;
   }
 
@@ -2361,6 +4441,169 @@ export class OpenFrontGymEnv {
     return [...tiles].filter((tile) => game.isValidRef(tile));
   }
 
+  private placementBuildOptions(
+    player: Player,
+  ): { unit: string; tile: number; rocketDirectionUp: boolean }[] {
+    const defaultLimit = this.config.actionProfile === "bot-lite" ? 24 : 80;
+    const probeLimit = this.config.actionProfile === "bot-lite"
+      ? defaultLimit
+      : this.config.buildProbeLimit;
+    const probes = this.buildProbeTiles(player);
+    const tiles = probeLimit === "full"
+      ? probes
+      : sampleEvenly(probes, probeLimit || defaultLimit);
+    const unitTypes: PlayerBuildableUnitType[] = [
+      ...LAND_STRUCTURE_BUILD_UNITS,
+      UnitType.Port,
+    ];
+    const options: {
+      unit: string;
+      tile: number;
+      rocketDirectionUp: boolean;
+    }[] = [];
+    const seen = new Set<string>();
+    for (const tile of tiles) {
+      const validTiles = this.validStructureSpawnTiles(player, tile);
+      for (const unitType of unitTypes) {
+        if (!this.canBuildUnitType(player, unitType)) continue;
+        const placement = player.canBuild(unitType, tile, validTiles);
+        if (placement === false) continue;
+        const key = `${unitType}:${placement}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        options.push({ unit: unitType, tile: placement, rocketDirectionUp: true });
+      }
+    }
+    return options;
+  }
+
+  private placementBuildProposalOptions(
+    player: Player,
+  ): { unit: string; tile: number; rocketDirectionUp: boolean }[] {
+    const unitTypes: PlayerBuildableUnitType[] = [
+      ...LAND_STRUCTURE_BUILD_UNITS,
+      UnitType.Port,
+    ];
+    const options: { unit: string; tile: number; rocketDirectionUp: boolean }[] = [];
+    const seen = new Set<string>();
+    const game = this.requireRunner().game;
+    const anchors = new Set<TileRef>();
+    const priority = new Set<TileRef>();
+    for (const tile of player.borderTiles()) {
+      anchors.add(tile);
+      for (const neighbor of game.neighbors(tile)) anchors.add(neighbor);
+    }
+    for (const unit of player.units()) {
+      anchors.add(unit.tile());
+      if (unit.type() === UnitType.Port && unit.isActive() && !unit.isUnderConstruction()) {
+        for (const neighbor of game.neighbors(unit.tile())) {
+          if (game.isWater(neighbor)) priority.add(neighbor);
+        }
+      }
+    }
+    const configuredLimit = this.config.buildProbeLimit;
+    const limit = configuredLimit === "full"
+      ? priority.size + anchors.size
+      : configuredLimit;
+    const priorityTiles = [...priority].sort((a, b) => a - b)
+      .slice(0, limit);
+    const remaining = [...anchors]
+      .filter((tile) => game.isValidRef(tile) && !priority.has(tile))
+      .sort((a, b) => a - b);
+    const tiles = [
+      ...priorityTiles,
+      ...sampleEvenly(remaining, Math.max(0, limit - priorityTiles.length)),
+    ];
+    for (const tile of tiles) {
+      const validTiles = this.validStructureSpawnTiles(player, tile);
+      for (const unit of unitTypes) {
+        if (!this.canBuildUnitType(player, unit)) continue;
+        const placement = player.canBuild(unit, tile, validTiles);
+        if (placement === false) continue;
+        const key = `${unit}:${placement}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        options.push({ unit, tile: placement as number, rocketDirectionUp: true });
+      }
+    }
+    if (this.canBuildUnitType(player, UnitType.Warship)) {
+      for (const tile of tiles) {
+        if (!game.isWater(tile) || player.canBuild(UnitType.Warship, tile) === false) {
+          continue;
+        }
+        const key = `${UnitType.Warship}:${tile}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        options.push({ unit: UnitType.Warship, tile, rocketDirectionUp: true });
+      }
+    }
+    return options;
+  }
+
+  private visibleEntityTokens(cid: ClientID) {
+    const game = this.requireRunner().game;
+    const me = game.playerByClientID(cid);
+    const width = Math.max(1, game.width());
+    const height = Math.max(1, game.height());
+    const tokenTypes = [...PRECISION_V3_ENTITY_KINDS];
+    const kindIndex = new Map(tokenTypes.map((type, index) => [type, index]));
+    return game.units(...tokenTypes)
+      .filter((unit) => unit.isActive() || unit.isUnderConstruction())
+      .map((unit) => {
+        const tile = unit.tile();
+        const owner = unit.owner();
+        return {
+          kind: kindIndex.get(
+            unit.type() as (typeof PRECISION_V3_ENTITY_KINDS)[number],
+          ) ?? 0,
+          owner: owner.smallID(),
+          rel: owner === me ? 0 : owner.isPlayer() ? 2 : 1,
+          x: game.x(tile) / width,
+          y: game.y(tile) / height,
+          troops: Math.log1p(
+            humanVisibleNumberFloor(Math.max(0, unit.troops?.() ?? 0) / 10) * 10,
+          ),
+          health: Math.log1p(Math.max(0, Number(unit.health?.() ?? 0))),
+          tile: tile as number,
+          id: unit.id(),
+          unitType: unit.type(),
+          level: unit.level(),
+          active: unit.isActive(),
+          underConstruction: unit.isUnderConstruction(),
+          targetTile: TARGET_PRESERVING_BUILD_UNITS.has(unit.type())
+            ? (unit.targetTile() ?? null)
+            : null,
+          markedForDeletion: unit.isMarkedForDeletion(),
+          trainType: unit.trainType() ?? null,
+          loaded: unit.isLoaded() ?? null,
+          hasTrainStation: unit.hasTrainStation(),
+        };
+      });
+  }
+
+  private missileTargetTiles(
+    player: Player,
+  ): { tile: TileRef; targetPlayerID: string }[] {
+    const game = this.requireRunner().game;
+    const byTile = new Map<TileRef, string>();
+    for (const unit of game.units()) {
+      const owner = unit.owner();
+      if (!owner.isPlayer() || owner === player || !owner.isAlive()) continue;
+      byTile.set(unit.tile(), owner.id());
+    }
+    for (const target of game.players()) {
+      if (target === player || !target.isAlive() || !target.hasSpawned()) continue;
+      for (const tile of sampleEvenly([...target.tiles()], 16)) {
+        byTile.set(tile, target.id());
+      }
+    }
+    return [...byTile]
+      .map(([tile, targetPlayerID]) => ({ tile, targetPlayerID }))
+      .sort((a, b) =>
+        a.targetPlayerID.localeCompare(b.targetPlayerID) || a.tile - b.tile,
+      );
+  }
+
   private requireRunner(): GameRunner {
     if (this.runner === null) {
       throw new Error("environment has not been reset");
@@ -2372,7 +4615,8 @@ export class OpenFrontGymEnv {
 export function buildGameStartInfo(
   config: Pick<
     HeadlessEpisodeConfig,
-    "bots" | "difficulty" | "map" | "nations" | "seed"
+    "bots" | "difficulty" | "map" | "nations" | "seed" | "infiniteGold" |
+    "donateGold" | "donateTroops" | "waterNukes"
   >,
   clientIDs: ClientID | ClientID[] = CLIENT_ID,
 ): GameStartInfo {
@@ -2393,12 +4637,13 @@ export function buildGameStartInfo(
       difficulty: config.difficulty,
       bots: config.bots,
       nations: config.nations,
-      infiniteGold: false,
+      infiniteGold: config.infiniteGold ?? false,
       infiniteTroops: false,
       instantBuild: false,
       randomSpawn: false,
-      donateGold: false,
-      donateTroops: false,
+      donateGold: config.donateGold,
+      donateTroops: config.donateTroops,
+      waterNukes: config.waterNukes ? true : undefined,
       disabledUnits: [],
     } satisfies GameConfig,
   };
@@ -2410,6 +4655,8 @@ async function createIsolatedGameRunner(
   mapsRoot: string,
   callBack: (gu: GameUpdateViewData | ErrorUpdate) => void,
   winPercent?: number,
+  executionObserver?: (tick: number, execution: Execution) => void,
+  nativeTeacherClientID?: ClientID,
 ): Promise<GameRunner> {
   const config = new Config(gameStart.config, null, false);
   if (winPercent !== undefined) {
@@ -2492,12 +4739,30 @@ async function createIsolatedGameRunner(
     config,
     teamGameSpawnAreas,
   );
+  if (executionObserver !== undefined) {
+    const addExecution = game.addExecution.bind(game);
+    game.addExecution = (...executions: Execution[]) => {
+      for (const execution of executions) {
+        executionObserver(game.ticks(), execution);
+      }
+      addExecution(...executions);
+    };
+  }
   const runner = new GameRunner(
     game,
     new Executor(game, gameStart.gameID, clientID),
     callBack,
   );
   runner.init();
+  if (nativeTeacherClientID !== undefined) {
+    const teacher = game.playerByClientID(nativeTeacherClientID);
+    if (teacher === null) {
+      throw new Error(`native teacher client ${nativeTeacherClientID} not found`);
+    }
+    game.addExecution(
+      new NationExecution(gameStart.gameID, new Nation(undefined, teacher.info())),
+    );
+  }
   return runner;
 }
 
@@ -2545,6 +4810,16 @@ function deterministicID(seed: string, prefix: string): string {
   return id.slice(0, 8);
 }
 
+export function humanVisibleNumberFloor(value: number): number {
+  const n = Math.max(0, value);
+  if (n >= 10_000_000) return Math.floor(n / 100_000) * 100_000;
+  if (n >= 1_000_000) return Math.floor(n / 10_000) * 10_000;
+  if (n >= 100_000) return Math.floor(n / 1_000) * 1_000;
+  if (n >= 10_000) return Math.floor(n / 100) * 100;
+  if (n >= 1_000) return Math.floor(n / 10) * 10;
+  return Math.floor(n);
+}
+
 function summarizePlayer(
   player: Player,
   selfID: PlayerID | null,
@@ -2553,15 +4828,22 @@ function summarizePlayer(
   for (const unit of player.units()) {
     units[unit.type()] = (units[unit.type()] ?? 0) + 1;
   }
+  const isSelf = player.id() === selfID;
+  const troops = player.troops();
+  const gold = Number(player.gold());
   return {
     id: player.id(),
     smallID: player.smallID(),
     type: player.type(),
-    isSelf: player.id() === selfID,
+    isSelf,
     isAlive: player.isAlive(),
     tiles: player.numTilesOwned(),
-    troops: player.troops(),
-    gold: Number(player.gold()),
+    // The client displays opponent gold via renderNumber and troops via
+    // renderTroops (renderNumber(troops / 10)). Keep the information but not
+    // hidden precision below those display buckets. The same display contract
+    // applies to self and opponents.
+    troops: humanVisibleNumberFloor(troops / 10) * 10,
+    gold: humanVisibleNumberFloor(gold),
     outgoingAttacks: player.outgoingAttacks().length,
     incomingAttacks: player.incomingAttacks().length,
     units,
